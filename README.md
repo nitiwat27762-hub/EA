@@ -1,0 +1,2 @@
+# EA
+indicator EA XAUUSD
