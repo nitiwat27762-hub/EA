@@ -13,6 +13,8 @@
 //    + กรองความต่อเนื่อง (แท่งที่เพิ่งปิดค้างในโซนสุดขั้วฝั่งเดียวกัน → ไม่สวน)
 //    + ปฏิทินข่าว USD ระดับ High (ตัวเลือก, ใช้ไม่ได้ใน Strategy Tester)
 //
+// 🆕 v3.10: ป้ายค่า Z สด ณ ราคาปัจจุบัน (ลอยข้างแท่งล่าสุดที่ระดับ Bid, เปลี่ยนสีตามโซน)
+//
 // 🎯 นิยามระบบ (v2.00)
 //  สวนกลับค่าที่ผิดปกติ (Z ≥ +2.5 / Z ≤ −3.0) ที่ "ควรดีดกลับอย่างรวดเร็ว"
 //  ถ้าไม่ดีดกลับภายในเวลาที่กำหนด = สมมติฐานผิด → ออกทันที
@@ -37,7 +39,7 @@
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "3.00"
+#property version     "3.10"
 #property description "สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว สำหรับ XAUUSD (บัญชี Hedging)"
 #property tester_indicator "Seven_Lines_Exhaustion_Ind.ex5"
 
@@ -95,6 +97,9 @@ input bool            InpShowDashboard     = true;       // แสดง Dashboa
 input bool            InpShowZLines        = true;       // แสดงเส้น Main / ระดับ SELL / ระดับ BUY
 input bool            InpShow7Lines        = true;       // แนบ Indicator 7 เส้น (ต้องมี Seven_Lines_Exhaustion_Ind.ex5)
 input int             InpFastPeriod        = 10;         // Fast Period ของ Indicator 7 เส้น
+input bool            InpShowLiveZ         = true;       // แสดงป้ายค่า Z สด ณ ราคาปัจจุบัน
+input int             InpLiveZFontSize     = 11;         // ขนาดตัวอักษรป้าย Z สด
+input int             InpLiveZShiftBars    = 2;          // ระยะเยื้องป้าย Z สดไปทางขวาของแท่งล่าสุด (แท่ง)
 
 //====================================================================
 // 🔒 INTERNAL
@@ -108,6 +113,7 @@ const string OBJ_PREFIX     = "7LCEA_";
 const string LINE_MAIN      = "7LCEA_MAIN";
 const string LINE_SELL      = "7LCEA_SELL_Z";
 const string LINE_BUY       = "7LCEA_BUY_Z";
+const string LABEL_LIVE_Z   = "7LCEA_LIVE_Z";
 const string IND_NAME       = "Seven_Lines_Exhaustion_Ind";
 const string IND_SHORTNAME  = "7-Lines Exhaustion v8.82 (Non-Repaint)";
 const long   WEEK_SEC       = 604800;
@@ -181,6 +187,9 @@ string    g_last_comment = "";
 double    g_line_main    = 0.0;
 double    g_line_sell    = 0.0;
 double    g_line_buy     = 0.0;
+string    g_live_z_text  = "";
+double    g_live_z_price = 0.0;
+datetime  g_live_z_time  = 0;
 int       g_ind_handle   = INVALID_HANDLE;
 
 //====================================================================
@@ -850,6 +859,54 @@ void MoveHLine(string name, double price, color clr, ENUM_LINE_STYLE style, int 
    ObjectSetString(0, name, OBJPROP_TOOLTIP, tip);
 }
 
+// สีป้าย Z ตามโซน: ถึงเกณฑ์ = แดงส้ม/ฟ้า, ใกล้เกณฑ์ (เลยระดับ re-arm) = ทอง, ปกติ = เงิน
+color LiveZColor(double z) {
+   if(z >= InpSellZ)                   return clrOrangeRed;
+   if(z <= -InpBuyZ)                   return clrDeepSkyBlue;
+   if(z >= InpSellZ - InpReArmBuffer ||
+      z <= -InpBuyZ + InpReArmBuffer)  return clrGold;
+   return clrSilver;
+}
+
+// ป้ายค่า Z สด ลอยข้างแท่งล่าสุดที่ระดับ Bid — อัปเดตเฉพาะเมื่อข้อความ/ราคา/แท่งเปลี่ยน
+void UpdateLiveZLabel(double bid) {
+   if(!g_draw || !InpShowLiveZ) return;
+   if(!g_z_valid) {
+      if(ObjectFind(0, LABEL_LIVE_Z) >= 0) ObjectDelete(0, LABEL_LIVE_Z);
+      g_live_z_text = "";
+      return;
+   }
+
+   string text = StringFormat("◀ Z %+.2f", g_z);
+   if(g_sell.watching)
+      text += StringFormat("  | SELL สุดขั้ว %+.2f → ยิง ≤ %+.2f", g_sell.extreme, g_sell.extreme - InpPullbackZ);
+   else if(g_buy.watching)
+      text += StringFormat("  | BUY สุดขั้ว %+.2f → ยิง ≥ %+.2f", g_buy.extreme, g_buy.extreme + InpPullbackZ);
+
+   datetime t = iTime(_Symbol, PERIOD_CURRENT, 0) + (datetime)(PeriodSeconds(PERIOD_CURRENT) * MathMax(0, InpLiveZShiftBars));
+   double   price = ND(bid);
+   if(text == g_live_z_text && price == g_live_z_price && t == g_live_z_time && ObjectFind(0, LABEL_LIVE_Z) >= 0) return;
+
+   if(ObjectFind(0, LABEL_LIVE_Z) < 0) {
+      ObjectCreate(0, LABEL_LIVE_Z, OBJ_TEXT, 0, t, price);
+      ObjectSetString(0,  LABEL_LIVE_Z, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, LABEL_LIVE_Z, OBJPROP_FONTSIZE, InpLiveZFontSize);
+      ObjectSetInteger(0, LABEL_LIVE_Z, OBJPROP_ANCHOR, ANCHOR_LEFT);
+      ObjectSetInteger(0, LABEL_LIVE_Z, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, LABEL_LIVE_Z, OBJPROP_HIDDEN, true);
+   }
+   ObjectSetInteger(0, LABEL_LIVE_Z, OBJPROP_TIME, t);
+   ObjectSetDouble(0,  LABEL_LIVE_Z, OBJPROP_PRICE, price);
+   ObjectSetString(0,  LABEL_LIVE_Z, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, LABEL_LIVE_Z, OBJPROP_COLOR, LiveZColor(g_z));
+   ObjectSetString(0,  LABEL_LIVE_Z, OBJPROP_TOOLTIP,
+                   StringFormat("Z_reg %+.3f | Z_SMA %+.3f | เส้นกลาง %s", g_z, g_z_sma, DoubleToString(g_center, _Digits)));
+
+   g_live_z_text  = text;
+   g_live_z_price = price;
+   g_live_z_time  = t;
+}
+
 void UpdateZLines() {
    if(!g_draw || !InpShowZLines || !g_z_valid) return;
    double p_main = g_center;
@@ -936,7 +993,7 @@ void UpdateDashboard(int ts, datetime now) {
                     : "ตัวจับช็อกปิดอยู่";
    string news_str = NextNewsText(now);
 
-   string msg = "=== 📊 7-Lines Counter EA v3.00 (Regression Z + News Guard) ===\n";
+   string msg = "=== 📊 7-Lines Counter EA v3.10 (Regression Z + News Guard) ===\n";
    msg += StringFormat("Z (%s, %d) : %s\n", EnumToString(InpZ_Timeframe), InpZ_Period, z_str);
    msg += StringFormat("Z แท่งที่เพิ่งปิด : %+.2f | %s%s\n", g_prev_close_z, atr_str, (news_str == "" ? "" : " | " + news_str));
    msg += StringFormat("SELL (Z ≥ +%.2f) : %s\n", InpSellZ, SideText(g_sell, true));
@@ -1039,6 +1096,7 @@ int OnInit() {
    ArrayResize(g_news_names, 0);
    g_last_comment   = "";
    g_line_main = g_line_sell = g_line_buy = 0.0;
+   g_live_z_text = ""; g_live_z_price = 0.0; g_live_z_time = 0;
    ArrayResize(g_activated, 0);
 
    RestoreGuardsFromHistory();
@@ -1070,6 +1128,7 @@ void OnTick() {
 
    CheckShockLive();
    UpdateSides();
+   UpdateLiveZLabel(bid);
 
    int ts = GetTimeState(ServerNow());
    if(ts == TS_CLOSING) {
@@ -1093,6 +1152,7 @@ void OnTimer() {
       double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       if(bid > 0.0) UpdateZ(bid);
       UpdateZLines();
+      if(bid > 0.0) UpdateLiveZLabel(bid);
       UpdateDashboard(ts, now);
    }
 }
