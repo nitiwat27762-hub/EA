@@ -13,6 +13,11 @@
 //    + กรองความต่อเนื่อง (แท่งที่เพิ่งปิดค้างในโซนสุดขั้วฝั่งเดียวกัน → ไม่สวน)
 //    + ปฏิทินข่าว USD ระดับ High (ตัวเลือก, ใช้ไม่ได้ใน Strategy Tester)
 //
+// 🆕 v4.10: แก้การแสดงผล
+//  • ป้าย Z สดเปลี่ยนเป็น OBJ_LABEL ติดขอบขวากราฟที่ความสูงของราคาปัจจุบัน (เดิมวางไว้ในอนาคต
+//    2 แท่ง ซึ่งมองไม่เห็นถ้าไม่ได้เปิด Chart shift) + ตามการเลื่อน/ซูมกราฟผ่าน OnChartEvent
+//  • สั่ง ChartRedraw ทุก 1 วินาที (วัตถุแสดงผลแม้ไม่มี Tick เข้า) + รายงานสถานะการวาดเส้น 7 เส้นบน Dashboard/Log
+//
 // 🆕 v4.00: รวม Indicator 7 เส้นเข้ามาใน EA (ไฟล์เดียวจบ ไม่ต้องพึ่ง Seven_Lines_Exhaustion_Ind.ex5)
 //  • คำนวณเส้น Main(SMA), L1 EMA, L2 LWMA, L3 HMA, L4 LSMA, L5 ALMA, L6 Kinematic บน TF ของกราฟ
 //  • วาดเป็นเส้น object ย้อนหลัง InpLinesBars แท่ง: คำนวณ/วาดใหม่ทั้งชุดเฉพาะตอนขึ้นแท่งใหม่
@@ -44,7 +49,7 @@
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "4.00"
+#property version     "4.10"
 #property description "สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว สำหรับ XAUUSD (บัญชี Hedging)"
 
 #include <Trade\Trade.mqh>
@@ -104,7 +109,7 @@ input int             InpFastPeriod        = 10;         // Fast Period ขอ�
 input int             InpLinesBars         = 200;        // จำนวนแท่งย้อนหลังที่วาดเส้น 7 เส้น
 input bool            InpShowLiveZ         = true;       // แสดงป้ายค่า Z สด ณ ราคาปัจจุบัน
 input int             InpLiveZFontSize     = 11;         // ขนาดตัวอักษรป้าย Z สด
-input int             InpLiveZShiftBars    = 2;          // ระยะเยื้องป้าย Z สดไปทางขวาของแท่งล่าสุด (แท่ง)
+input int             InpLiveZOffsetPx     = 10;         // ระยะห่างป้าย Z สดจากขอบขวาของกราฟ (พิกเซล)
 
 //====================================================================
 // 🔒 INTERNAL
@@ -191,8 +196,7 @@ double    g_line_main    = 0.0;
 double    g_line_sell    = 0.0;
 double    g_line_buy     = 0.0;
 string    g_live_z_text  = "";
-double    g_live_z_price = 0.0;
-datetime  g_live_z_time  = 0;
+int       g_live_z_y     = -1;
 
 // --- เส้น 7 เส้น (TF ของกราฟ, เรียงเก่า→ใหม่) ---
 double    g_lc[];                 // ราคาปิด (แท่งสุดท้าย = แท่งปัจจุบัน)
@@ -201,6 +205,7 @@ double    g_lv[][7];              // ค่าเส้นทั้ง 7 ต่�
 int       g_lines_total  = 0;
 int       g_lines_warm   = 0;     // ดัชนีแรกที่เส้น 2-7 คำนวณได้ครบ
 datetime  g_lines_bar    = 0;     // เวลาแท่งปัจจุบันตอนคำนวณชุดล่าสุด
+string    g_lines_status = "ยังไม่ได้วาด";
 double    g_alma_w[];
 double    g_alma_wsum    = 0.0;
 
@@ -940,19 +945,32 @@ void ComputeLinesAt(int i) {
    g_lv[i][6] = LnKinematic(g_lc, i);
 }
 
+int g_lines_fail = 0;
+int g_lines_err  = 0;
+
+void SetLinesStatus(string st) {
+   if(st == g_lines_status) return;
+   g_lines_status = st;
+   Print("📈 เส้น 7 เส้น: ", st);
+}
+
 // ช่วงเส้นที่ k (0 = ช่วงที่จบที่แท่งปัจจุบัน) ของเส้น L
 void SetLineSegment(int L, int k) {
    int i1 = g_lines_total - 1 - k;
    int i0 = i1 - 1;
    string name = OBJ_PREFIX + "L" + IntegerToString(L) + "_" + IntegerToString(k);
    if(ObjectFind(0, name) < 0) {
-      ObjectCreate(0, name, OBJ_TREND, 0, g_lt[i0], g_lv[i0][L], g_lt[i1], g_lv[i1][L]);
+      if(!ObjectCreate(0, name, OBJ_TREND, 0, g_lt[i0], g_lv[i0][L], g_lt[i1], g_lv[i1][L])) {
+         g_lines_fail++;
+         g_lines_err = GetLastError();
+         return;
+      }
       ObjectSetInteger(0, name, OBJPROP_COLOR, LINE_CLR[L]);
       ObjectSetInteger(0, name, OBJPROP_WIDTH, LINE_WIDTH[L]);
       ObjectSetInteger(0, name, OBJPROP_STYLE, LINE_STYLE[L]);
       ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
       ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
-      ObjectSetInteger(0, name, OBJPROP_BACK, true);
+      ObjectSetInteger(0, name, OBJPROP_BACK, false);   // วาดทับแท่งเทียนเหมือนเส้น Indicator
       ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
       ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
       ObjectSetString(0,  name, OBJPROP_TOOLTIP, LINE_LABEL[L]);
@@ -968,16 +986,27 @@ bool RebuildLines() {
    g_lines_warm = MathMax(InpZ_Period, InpFastPeriod + sqrt_p) + 5;
    int total    = InpLinesBars + g_lines_warm + 100;   // +100 แท่งให้ EMA นิ่งก่อนเริ่มวาด
 
-   if(CopyClose(_Symbol, PERIOD_CURRENT, 0, total, g_lc) != total) return false;
-   if(CopyTime (_Symbol, PERIOD_CURRENT, 0, total, g_lt) != total) return false;
+   int got_c = CopyClose(_Symbol, PERIOD_CURRENT, 0, total, g_lc);
+   int got_t = CopyTime (_Symbol, PERIOD_CURRENT, 0, total, g_lt);
+   if(got_c != total || got_t != total) {
+      SetLinesStatus(StringFormat("⏳ รอประวัติราคา (ได้ %d/%d แท่ง, error %d)", MathMin(got_c, got_t), total, GetLastError()));
+      g_lines_total = 0;
+      return false;
+   }
    ArrayResize(g_lv, total);
    g_lines_total = total;
 
    for(int i = 0; i < total; i++) ComputeLinesAt(i);
+   g_lines_fail = 0;
    for(int k = 0; k < InpLinesBars - 1; k++)
       for(int L = 0; L < 7; L++) SetLineSegment(L, k);
 
    g_lines_bar = g_lt[total - 1];
+   if(g_lines_fail > 0)
+      SetLinesStatus(StringFormat("⚠️ สร้างเส้นไม่สำเร็จ %d ช่วง (error %d)", g_lines_fail, g_lines_err));
+   else
+      SetLinesStatus(StringFormat("✅ วาดแล้ว %d แท่ง (%s)", InpLinesBars, EnumToString(Period())));
+   ChartRedraw(0);
    return true;
 }
 
@@ -1024,7 +1053,8 @@ color LiveZColor(double z) {
    return clrSilver;
 }
 
-// ป้ายค่า Z สด ลอยข้างแท่งล่าสุดที่ระดับ Bid — อัปเดตเฉพาะเมื่อข้อความ/ราคา/แท่งเปลี่ยน
+// ป้ายค่า Z สด: ติดขอบขวาของกราฟ ที่ความสูงเดียวกับราคา Bid (มองเห็นเสมอ ไม่ต้องเปิด Chart shift)
+// อัปเดตเฉพาะเมื่อข้อความ/ตำแหน่งเปลี่ยน
 void UpdateLiveZLabel(double bid) {
    if(!g_draw || !InpShowLiveZ) return;
    if(!g_z_valid) {
@@ -1033,34 +1063,39 @@ void UpdateLiveZLabel(double bid) {
       return;
    }
 
-   string text = StringFormat("◀ Z %+.2f", g_z);
+   string text = StringFormat("Z %+.2f ▶", g_z);
    if(g_sell.watching)
-      text += StringFormat("  | SELL สุดขั้ว %+.2f → ยิง ≤ %+.2f", g_sell.extreme, g_sell.extreme - InpPullbackZ);
+      text = StringFormat("SELL สุดขั้ว %+.2f → ยิง ≤ %+.2f  |  ", g_sell.extreme, g_sell.extreme - InpPullbackZ) + text;
    else if(g_buy.watching)
-      text += StringFormat("  | BUY สุดขั้ว %+.2f → ยิง ≥ %+.2f", g_buy.extreme, g_buy.extreme + InpPullbackZ);
+      text = StringFormat("BUY สุดขั้ว %+.2f → ยิง ≥ %+.2f  |  ", g_buy.extreme, g_buy.extreme + InpPullbackZ) + text;
 
-   datetime t = iTime(_Symbol, PERIOD_CURRENT, 0) + (datetime)(PeriodSeconds(PERIOD_CURRENT) * MathMax(0, InpLiveZShiftBars));
-   double   price = ND(bid);
-   if(text == g_live_z_text && price == g_live_z_price && t == g_live_z_time && ObjectFind(0, LABEL_LIVE_Z) >= 0) return;
+   int x = 0, y = 0;
+   if(!ChartTimePriceToXY(0, 0, iTime(_Symbol, PERIOD_CURRENT, 0), bid, x, y)) return;
+   int h = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS, 0);
+   if(y < 8)     y = 8;          // ราคาหลุดขอบบน/ล่าง → ติดขอบไว้ให้ยังเห็น
+   if(y > h - 8) y = h - 8;
+
+   if(text == g_live_z_text && y == g_live_z_y && ObjectFind(0, LABEL_LIVE_Z) >= 0) return;
 
    if(ObjectFind(0, LABEL_LIVE_Z) < 0) {
-      ObjectCreate(0, LABEL_LIVE_Z, OBJ_TEXT, 0, t, price);
+      ObjectCreate(0, LABEL_LIVE_Z, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, LABEL_LIVE_Z, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetInteger(0, LABEL_LIVE_Z, OBJPROP_ANCHOR, ANCHOR_RIGHT);
       ObjectSetString(0,  LABEL_LIVE_Z, OBJPROP_FONT, "Arial Bold");
       ObjectSetInteger(0, LABEL_LIVE_Z, OBJPROP_FONTSIZE, InpLiveZFontSize);
-      ObjectSetInteger(0, LABEL_LIVE_Z, OBJPROP_ANCHOR, ANCHOR_LEFT);
       ObjectSetInteger(0, LABEL_LIVE_Z, OBJPROP_SELECTABLE, false);
       ObjectSetInteger(0, LABEL_LIVE_Z, OBJPROP_HIDDEN, true);
+      ObjectSetInteger(0, LABEL_LIVE_Z, OBJPROP_BACK, false);
    }
-   ObjectSetInteger(0, LABEL_LIVE_Z, OBJPROP_TIME, t);
-   ObjectSetDouble(0,  LABEL_LIVE_Z, OBJPROP_PRICE, price);
+   ObjectSetInteger(0, LABEL_LIVE_Z, OBJPROP_XDISTANCE, MathMax(0, InpLiveZOffsetPx));
+   ObjectSetInteger(0, LABEL_LIVE_Z, OBJPROP_YDISTANCE, y);
    ObjectSetString(0,  LABEL_LIVE_Z, OBJPROP_TEXT, text);
    ObjectSetInteger(0, LABEL_LIVE_Z, OBJPROP_COLOR, LiveZColor(g_z));
    ObjectSetString(0,  LABEL_LIVE_Z, OBJPROP_TOOLTIP,
                    StringFormat("Z_reg %+.3f | Z_SMA %+.3f | เส้นกลาง %s", g_z, g_z_sma, DoubleToString(g_center, _Digits)));
 
-   g_live_z_text  = text;
-   g_live_z_price = price;
-   g_live_z_time  = t;
+   g_live_z_text = text;
+   g_live_z_y    = y;
 }
 
 void UpdateZLines() {
@@ -1149,7 +1184,7 @@ void UpdateDashboard(int ts, datetime now) {
                     : "ตัวจับช็อกปิดอยู่";
    string news_str = NextNewsText(now);
 
-   string msg = "=== 📊 7-Lines Counter EA v4.00 (Regression Z + News Guard) ===\n";
+   string msg = "=== 📊 7-Lines Counter EA v4.10 (Regression Z + News Guard) ===\n";
    msg += StringFormat("Z (%s, %d) : %s\n", EnumToString(InpZ_Timeframe), InpZ_Period, z_str);
    msg += StringFormat("Z แท่งที่เพิ่งปิด : %+.2f | %s%s\n", g_prev_close_z, atr_str, (news_str == "" ? "" : " | " + news_str));
    msg += StringFormat("SELL (Z ≥ +%.2f) : %s\n", InpSellZ, SideText(g_sell, true));
@@ -1158,6 +1193,7 @@ void UpdateDashboard(int ts, datetime now) {
                        buys, sells, buys + sells, InpMaxPositions, PriceToPts(ask - bid), InpMaxSpread_Pts);
    msg += "ตัวกั้น : " + GuardText(now) + "\n";
    msg += "เวลาตลาด : " + TimeStateText(ts, now) + "\n";
+   if(InpShow7Lines) msg += "เส้น 7 เส้น : " + g_lines_status + "\n";
    msg += "สถานะล่าสุด : " + g_last_status;
    msg += PositionLines(bid, ask, now);
 
@@ -1236,7 +1272,8 @@ int OnInit() {
    ArrayResize(g_news_names, 0);
    g_last_comment   = "";
    g_line_main = g_line_sell = g_line_buy = 0.0;
-   g_live_z_text = ""; g_live_z_price = 0.0; g_live_z_time = 0;
+   g_live_z_text = ""; g_live_z_y = -1;
+   g_lines_status = "ยังไม่ได้วาด";
    ArrayResize(g_activated, 0);
 
    RestoreGuardsFromHistory();
@@ -1290,6 +1327,18 @@ void OnTimer() {
       UpdateLinesLive();
       if(bid > 0.0) UpdateLiveZLabel(bid);
       UpdateDashboard(ts, now);
+      ChartRedraw(0);   // ให้วัตถุแสดงผลแม้ช่วงที่ไม่มี Tick เข้า
+   }
+}
+
+// เลื่อน/ซูม/ย่อขยายกราฟ → จัดตำแหน่งป้าย Z สดใหม่ทันที
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam) {
+   if(id != CHARTEVENT_CHART_CHANGE || !g_draw) return;
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   if(bid > 0.0) {
+      g_live_z_y = -1;
+      UpdateLiveZLabel(bid);
+      ChartRedraw(0);
    }
 }
 

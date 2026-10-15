@@ -16,7 +16,10 @@ indicator EA XAUUSD
 
 | ไฟล์ | เวอร์ชัน | รายละเอียด |
 |---|---|---|
-| `Experts/Seven_Lines_Counter_EA.mq5` | 4.00 | EA สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว (XAUUSD, บัญชี Hedging) |
+| `Experts/Seven_Lines_Counter_EA.mq5` | 4.10 | EA สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว (XAUUSD, บัญชี Hedging) |
+
+### Counter EA v4.10
+- ป้าย Z สดติดขอบขวากราฟที่ระดับราคาปัจจุบัน (มองเห็นเสมอ), ChartRedraw ทุก 1 วินาที, สถานะการวาดเส้น 7 เส้นบน Dashboard
 
 ### Counter EA v4.00 — ไฟล์เดียวจบ
 - รวมเส้น 7 เส้น (Main SMA, EMA, LWMA, HMA, LSMA, ALMA, Kinematic) เข้ามาใน EA — ไม่ต้องใช้ไฟล์ Indicator แล้ว
