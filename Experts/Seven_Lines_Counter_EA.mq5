@@ -13,6 +13,11 @@
 //    + กรองความต่อเนื่อง (แท่งที่เพิ่งปิดค้างในโซนสุดขั้วฝั่งเดียวกัน → ไม่สวน)
 //    + ปฏิทินข่าว USD ระดับ High (ตัวเลือก, ใช้ไม่ได้ใน Strategy Tester)
 //
+// 🆕 v4.00: รวม Indicator 7 เส้นเข้ามาใน EA (ไฟล์เดียวจบ ไม่ต้องพึ่ง Seven_Lines_Exhaustion_Ind.ex5)
+//  • คำนวณเส้น Main(SMA), L1 EMA, L2 LWMA, L3 HMA, L4 LSMA, L5 ALMA, L6 Kinematic บน TF ของกราฟ
+//  • วาดเป็นเส้น object ย้อนหลัง InpLinesBars แท่ง: คำนวณ/วาดใหม่ทั้งชุดเฉพาะตอนขึ้นแท่งใหม่
+//    ระหว่างแท่งขยับแค่ช่วงเส้นของแท่งปัจจุบันทุก 1 วินาที → CPU ต่ำ
+//
 // 🆕 v3.10: ป้ายค่า Z สด ณ ราคาปัจจุบัน (ลอยข้างแท่งล่าสุดที่ระดับ Bid, เปลี่ยนสีตามโซน)
 //
 // 🎯 นิยามระบบ (v2.00)
@@ -39,9 +44,8 @@
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "3.10"
+#property version     "4.00"
 #property description "สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว สำหรับ XAUUSD (บัญชี Hedging)"
-#property tester_indicator "Seven_Lines_Exhaustion_Ind.ex5"
 
 #include <Trade\Trade.mqh>
 
@@ -95,8 +99,9 @@ input int             InpCloseBeforeClose_Min = 30;      // ปิดทุก�
 input group "=== 7. การแสดงผล ==="
 input bool            InpShowDashboard     = true;       // แสดง Dashboard
 input bool            InpShowZLines        = true;       // แสดงเส้น Main / ระดับ SELL / ระดับ BUY
-input bool            InpShow7Lines        = true;       // แนบ Indicator 7 เส้น (ต้องมี Seven_Lines_Exhaustion_Ind.ex5)
-input int             InpFastPeriod        = 10;         // Fast Period ของ Indicator 7 เส้น
+input bool            InpShow7Lines        = true;       // วาดเส้น 7 เส้น (คำนวณในตัว EA บน TF ของกราฟ)
+input int             InpFastPeriod        = 10;         // Fast Period ของเส้น L1-L5
+input int             InpLinesBars         = 200;        // จำนวนแท่งย้อนหลังที่วาดเส้น 7 เส้น
 input bool            InpShowLiveZ         = true;       // แสดงป้ายค่า Z สด ณ ราคาปัจจุบัน
 input int             InpLiveZFontSize     = 11;         // ขนาดตัวอักษรป้าย Z สด
 input int             InpLiveZShiftBars    = 2;          // ระยะเยื้องป้าย Z สดไปทางขวาของแท่งล่าสุด (แท่ง)
@@ -114,8 +119,6 @@ const string LINE_MAIN      = "7LCEA_MAIN";
 const string LINE_SELL      = "7LCEA_SELL_Z";
 const string LINE_BUY       = "7LCEA_BUY_Z";
 const string LABEL_LIVE_Z   = "7LCEA_LIVE_Z";
-const string IND_NAME       = "Seven_Lines_Exhaustion_Ind";
-const string IND_SHORTNAME  = "7-Lines Exhaustion v8.82 (Non-Repaint)";
 const long   WEEK_SEC       = 604800;
 const long   DAY_SEC        = 86400;
 const long   MERGE_GAP_SEC  = 12 * 3600;   // ช่องว่าง session สั้นกว่านี้ (เช่นพักรายวัน) ถือว่าตลาดยังเปิด
@@ -190,7 +193,16 @@ double    g_line_buy     = 0.0;
 string    g_live_z_text  = "";
 double    g_live_z_price = 0.0;
 datetime  g_live_z_time  = 0;
-int       g_ind_handle   = INVALID_HANDLE;
+
+// --- เส้น 7 เส้น (TF ของกราฟ, เรียงเก่า→ใหม่) ---
+double    g_lc[];                 // ราคาปิด (แท่งสุดท้าย = แท่งปัจจุบัน)
+datetime  g_lt[];                 // เวลาแท่ง
+double    g_lv[][7];              // ค่าเส้นทั้ง 7 ต่อแท่ง
+int       g_lines_total  = 0;
+int       g_lines_warm   = 0;     // ดัชนีแรกที่เส้น 2-7 คำนวณได้ครบ
+datetime  g_lines_bar    = 0;     // เวลาแท่งปัจจุบันตอนคำนวณชุดล่าสุด
+double    g_alma_w[];
+double    g_alma_wsum    = 0.0;
 
 //====================================================================
 // 🧰 HELPERS
@@ -841,6 +853,150 @@ void ManagePositions(datetime now) {
 }
 
 //====================================================================
+// 📈 7 LINES ENGINE (ย้ายมาจาก Indicator v8.82 — คำนวณบน TF ของกราฟ)
+//====================================================================
+const color           LINE_CLR[7]   = {clrGold, clrDeepSkyBlue, clrDodgerBlue, clrMagenta, clrHotPink, clrMediumSeaGreen, clrOrange};
+const int             LINE_WIDTH[7] = {3, 1, 1, 2, 2, 1, 1};
+const ENUM_LINE_STYLE LINE_STYLE[7] = {STYLE_SOLID, STYLE_SOLID, STYLE_SOLID, STYLE_SOLID, STYLE_SOLID, STYLE_DOT, STYLE_DOT};
+const string          LINE_LABEL[7] = {"Main (SMA)", "L1 (EMA)", "L2 (LWMA)", "L3 (HMA)", "L4 (LSMA)", "L5 (ALMA)", "L6 (Kinematic)"};
+
+void InitALMAWeights(int period) {
+   ArrayResize(g_alma_w, period);
+   g_alma_wsum = 0.0;
+   double m = 0.85 * (period - 1);
+   double s = period / 6.0;
+   for(int k = 0; k < period; k++) {
+      double x = (period - 1 - k);
+      double w = MathExp(-MathPow(x - m, 2) / (2.0 * s * s));
+      g_alma_w[k]  = w;
+      g_alma_wsum += w;
+   }
+}
+
+double LnSMA(const double &p[], int i, int period) {
+   double sum = 0.0;
+   for(int k = 0; k < period; k++) sum += p[i - k];
+   return sum / period;
+}
+
+double LnWMA(const double &p[], int i, int period) {
+   double sum = 0.0, wsum = 0.0;
+   for(int k = 0; k < period; k++) {
+      double w = (double)(period - k);
+      sum += p[i - k] * w; wsum += w;
+   }
+   return (wsum > 0.0) ? sum / wsum : p[i];
+}
+
+double LnHMA(const double &p[], int i, int period) {
+   int half_p = (int)MathMax(1, MathFloor(period / 2.0));
+   int sqrt_p = (int)MathMax(1, MathFloor(MathSqrt(period)));
+   double sum = 0.0, wsum = 0.0;
+   for(int k = 0; k < sqrt_p; k++) {
+      double diff = 2.0 * LnWMA(p, i - k, half_p) - LnWMA(p, i - k, period);
+      double w    = (double)(sqrt_p - k);
+      sum += diff * w; wsum += w;
+   }
+   return (wsum > 0.0) ? sum / wsum : p[i];
+}
+
+double LnLSMA(const double &p[], int i, int period) {
+   double sx = 0.0, sy = 0.0, sxy = 0.0, sx2 = 0.0;
+   for(int k = 0; k < period; k++) {
+      double x = (double)(period - k), y = p[i - k];
+      sx += x; sy += y; sxy += x * y; sx2 += x * x;
+   }
+   double denom = period * sx2 - sx * sx;
+   if(denom == 0.0) return p[i];
+   double m = (period * sxy - sx * sy) / denom;
+   double b = (sy - m * sx) / period;
+   return m * period + b;
+}
+
+double LnALMA(const double &p[], int i, int period) {
+   if(g_alma_wsum <= 0.0) return p[i];
+   double sum = 0.0;
+   for(int k = 0; k < period; k++) sum += p[i - k] * g_alma_w[k];
+   return sum / g_alma_wsum;
+}
+
+double LnKinematic(const double &p[], int i) {
+   double p0 = (p[i]     + p[i - 1] + p[i - 2]) / 3.0;
+   double p1 = (p[i - 1] + p[i - 2] + p[i - 3]) / 3.0;
+   double p2 = (p[i - 2] + p[i - 3] + p[i - 4]) / 3.0;
+   double vel = p0 - p1;
+   return p0 + vel + (vel - (p1 - p2));
+}
+
+void ComputeLinesAt(int i) {
+   double alpha = 2.0 / (InpFastPeriod + 1.0);
+   g_lv[i][1] = (i == 0) ? g_lc[0] : g_lc[i] * alpha + g_lv[i - 1][1] * (1.0 - alpha);   // EMA ต่อเนื่องจากต้นหน้าต่าง
+   if(i < g_lines_warm) return;
+   g_lv[i][0] = LnSMA(g_lc, i, InpZ_Period);
+   g_lv[i][2] = LnWMA(g_lc, i, InpFastPeriod);
+   g_lv[i][3] = LnHMA(g_lc, i, InpFastPeriod);
+   g_lv[i][4] = LnLSMA(g_lc, i, InpFastPeriod);
+   g_lv[i][5] = LnALMA(g_lc, i, InpFastPeriod);
+   g_lv[i][6] = LnKinematic(g_lc, i);
+}
+
+// ช่วงเส้นที่ k (0 = ช่วงที่จบที่แท่งปัจจุบัน) ของเส้น L
+void SetLineSegment(int L, int k) {
+   int i1 = g_lines_total - 1 - k;
+   int i0 = i1 - 1;
+   string name = OBJ_PREFIX + "L" + IntegerToString(L) + "_" + IntegerToString(k);
+   if(ObjectFind(0, name) < 0) {
+      ObjectCreate(0, name, OBJ_TREND, 0, g_lt[i0], g_lv[i0][L], g_lt[i1], g_lv[i1][L]);
+      ObjectSetInteger(0, name, OBJPROP_COLOR, LINE_CLR[L]);
+      ObjectSetInteger(0, name, OBJPROP_WIDTH, LINE_WIDTH[L]);
+      ObjectSetInteger(0, name, OBJPROP_STYLE, LINE_STYLE[L]);
+      ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
+      ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
+      ObjectSetInteger(0, name, OBJPROP_BACK, true);
+      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+      ObjectSetString(0,  name, OBJPROP_TOOLTIP, LINE_LABEL[L]);
+      return;
+   }
+   ObjectMove(0, name, 0, g_lt[i0], g_lv[i0][L]);
+   ObjectMove(0, name, 1, g_lt[i1], g_lv[i1][L]);
+}
+
+// คำนวณและวาดใหม่ทั้งชุด (เรียกเฉพาะตอนขึ้นแท่งใหม่ของกราฟ)
+bool RebuildLines() {
+   int sqrt_p   = (int)MathMax(1, MathFloor(MathSqrt(InpFastPeriod)));
+   g_lines_warm = MathMax(InpZ_Period, InpFastPeriod + sqrt_p) + 5;
+   int total    = InpLinesBars + g_lines_warm + 100;   // +100 แท่งให้ EMA นิ่งก่อนเริ่มวาด
+
+   if(CopyClose(_Symbol, PERIOD_CURRENT, 0, total, g_lc) != total) return false;
+   if(CopyTime (_Symbol, PERIOD_CURRENT, 0, total, g_lt) != total) return false;
+   ArrayResize(g_lv, total);
+   g_lines_total = total;
+
+   for(int i = 0; i < total; i++) ComputeLinesAt(i);
+   for(int k = 0; k < InpLinesBars - 1; k++)
+      for(int L = 0; L < 7; L++) SetLineSegment(L, k);
+
+   g_lines_bar = g_lt[total - 1];
+   return true;
+}
+
+// ระหว่างแท่ง: อัปเดตเฉพาะค่าแท่งปัจจุบันและช่วงเส้นสุดท้าย
+void UpdateLinesLive() {
+   if(!g_draw || !InpShow7Lines) return;
+   datetime t0 = iTime(_Symbol, PERIOD_CURRENT, 0);
+   if(t0 == 0) return;
+   if(g_lines_total == 0 || t0 != g_lines_bar) { RebuildLines(); return; }
+
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   int    i   = g_lines_total - 1;
+   if(bid <= 0.0 || bid == g_lc[i]) return;
+   g_lc[i] = bid;
+   ComputeLinesAt(i);
+   for(int L = 0; L < 7; L++) SetLineSegment(L, 0);
+}
+
+//====================================================================
 // 🎨 DISPLAY
 //====================================================================
 void MoveHLine(string name, double price, color clr, ENUM_LINE_STYLE style, int width, string tip, double &cache) {
@@ -993,7 +1149,7 @@ void UpdateDashboard(int ts, datetime now) {
                     : "ตัวจับช็อกปิดอยู่";
    string news_str = NextNewsText(now);
 
-   string msg = "=== 📊 7-Lines Counter EA v3.10 (Regression Z + News Guard) ===\n";
+   string msg = "=== 📊 7-Lines Counter EA v4.00 (Regression Z + News Guard) ===\n";
    msg += StringFormat("Z (%s, %d) : %s\n", EnumToString(InpZ_Timeframe), InpZ_Period, z_str);
    msg += StringFormat("Z แท่งที่เพิ่งปิด : %+.2f | %s%s\n", g_prev_close_z, atr_str, (news_str == "" ? "" : " | " + news_str));
    msg += StringFormat("SELL (Z ≥ +%.2f) : %s\n", InpSellZ, SideText(g_sell, true));
@@ -1011,31 +1167,12 @@ void UpdateDashboard(int ts, datetime now) {
    }
 }
 
-void Attach7Lines() {
-   if(!g_draw || !InpShow7Lines) return;
-   // ส่งค่า Input ตามลำดับของ Indicator v8.82 — ปิดลูกศร ป้าย Dashboard และเส้น Z ของ Indicator (EA วาดเอง)
-   g_ind_handle = iCustom(_Symbol, PERIOD_CURRENT, IND_NAME,
-                          1.00, 10000.0, 10000.0, 10000.0,                    // กลุ่ม 1
-                          1.40, 3, 2.50, 2, 3.00,                             // กลุ่ม 2
-                          5000.0, 50.0, 25.0,                                 // กลุ่ม 3
-                          5000.0, 500.0, 10000.0, 2000.0, 20000.0, 3000.0,    // กลุ่ม 4
-                          2000.0, 500.0, 3000.0, 1000.0, 5000.0, 2000.0, 1.00, 1000.0, // กลุ่ม 5
-                          InpZ_Period, InpFastPeriod,                         // กลุ่ม 6
-                          false, 220.0, 10, false, 2, false,                  // กลุ่ม 7
-                          false, false, false, false, false, 450.0, 1000, 1000); // กลุ่ม 8
-   if(g_ind_handle == INVALID_HANDLE) {
-      Print("⚠️ โหลด Indicator 7 เส้นไม่ได้ — วาง Seven_Lines_Exhaustion_Ind.ex5 ไว้ใน MQL5/Indicators/");
-      return;
-   }
-   if(!ChartIndicatorAdd(0, 0, g_ind_handle))
-      PrintFormat("⚠️ แนบ Indicator 7 เส้นลงกราฟไม่ได้ (error %d)", GetLastError());
-}
-
 //====================================================================
 // 🚀 EVENT HANDLERS
 //====================================================================
 int OnInit() {
    if(InpZ_Period < 2 || InpFastPeriod < 2) { Print("❌ Period ต้องอย่างน้อย 2"); return(INIT_PARAMETERS_INCORRECT); }
+   if(InpLinesBars < 10 || InpLinesBars > 2000) { Print("❌ InpLinesBars ต้องอยู่ระหว่าง 10-2000"); return(INIT_PARAMETERS_INCORRECT); }
    if(InpSellZ <= 0.0 || InpBuyZ <= 0.0 || InpReArmBuffer < 0.0 || InpPullbackZ < 0.0) {
       Print("❌ ค่า Z ไม่ถูกต้อง");
       return(INIT_PARAMETERS_INCORRECT);
@@ -1077,6 +1214,9 @@ int OnInit() {
    if(StringFind(_Symbol, "XAU") < 0) PrintFormat("⚠️ EA ออกแบบสำหรับ XAUUSD แต่กำลังรันบน %s", _Symbol);
    if(InpShow7Lines && Period() != InpZ_Timeframe)
       PrintFormat("ℹ️ กราฟเป็น %s แต่ Z ใช้ %s — เส้น 7 เส้นจะคำนวณตาม TF ของกราฟ", EnumToString(Period()), EnumToString(InpZ_Timeframe));
+   InitALMAWeights(InpFastPeriod);
+   g_lines_total = 0;
+   g_lines_bar   = 0;
 
    // เริ่มต้นแบบปลดไก: ต้องรอ Z ถอยกลับก่อนจึงเฝ้าได้ (กันเข้ากลางทางเมื่อเปิด EA ตอน Z เกินเกณฑ์อยู่แล้ว)
    ResetSide(g_sell);
@@ -1103,7 +1243,7 @@ int OnInit() {
    RefreshNews(ServerNow());
 
    ObjectsDeleteAll(0, OBJ_PREFIX);
-   Attach7Lines();
+   if(g_draw && InpShow7Lines) RebuildLines();   // ถ้าประวัติยังโหลดไม่ครบ จะลองใหม่ใน OnTimer
 
    EventSetTimer(1);
    return(INIT_SUCCEEDED);
@@ -1111,11 +1251,6 @@ int OnInit() {
 
 void OnDeinit(const int reason) {
    EventKillTimer();
-   if(g_ind_handle != INVALID_HANDLE) {
-      ChartIndicatorDelete(0, 0, IND_SHORTNAME);
-      IndicatorRelease(g_ind_handle);
-      g_ind_handle = INVALID_HANDLE;
-   }
    ObjectsDeleteAll(0, OBJ_PREFIX);
    Comment("");
 }
@@ -1152,6 +1287,7 @@ void OnTimer() {
       double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       if(bid > 0.0) UpdateZ(bid);
       UpdateZLines();
+      UpdateLinesLive();
       if(bid > 0.0) UpdateLiveZLabel(bid);
       UpdateDashboard(ts, now);
    }

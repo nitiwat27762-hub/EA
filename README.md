@@ -16,7 +16,11 @@ indicator EA XAUUSD
 
 | ไฟล์ | เวอร์ชัน | รายละเอียด |
 |---|---|---|
-| `Experts/Seven_Lines_Counter_EA.mq5` | 3.10 | EA สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว (XAUUSD, บัญชี Hedging) |
+| `Experts/Seven_Lines_Counter_EA.mq5` | 4.00 | EA สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว (XAUUSD, บัญชี Hedging) |
+
+### Counter EA v4.00 — ไฟล์เดียวจบ
+- รวมเส้น 7 เส้น (Main SMA, EMA, LWMA, HMA, LSMA, ALMA, Kinematic) เข้ามาใน EA — ไม่ต้องใช้ไฟล์ Indicator แล้ว
+- วาดย้อนหลัง `InpLinesBars` แท่ง (ค่าเริ่มต้น 200) บน TF ของกราฟ, คำนวณใหม่ทั้งชุดเฉพาะตอนขึ้นแท่งใหม่
 
 ### Counter EA v3.10 — Regression Z + News Guard
 - ป้ายค่า Z สด ณ ราคาปัจจุบัน ลอยข้างแท่งล่าสุด (เปลี่ยนสีตามโซน + แสดงจุดสุดขั้ว/จุดยิงขณะเฝ้า)
@@ -36,6 +40,5 @@ indicator EA XAUUSD
 - ห้ามเข้า 1 ชม.แรกหลังตลาดเปิดสัปดาห์ / ปิดทุกไม้ 30 นาทีก่อนตลาดปิดสัปดาห์
 
 ## ติดตั้ง
-- `Indicators/*.mq5` → `MQL5/Indicators/`
-- `Experts/*.mq5` → `MQL5/Experts/`
-- คอมไพล์ indicator ก่อน แล้วค่อยคอมไพล์ EA (EA แนบ indicator 7 เส้นลงกราฟเอง)
+- EA: คัดลอก `Experts/Seven_Lines_Counter_EA.mq5` → `MQL5/Experts/` แล้วคอมไพล์ (ไฟล์เดียวจบ ไม่ต้องมี Indicator)
+- Indicator (ไม่บังคับ, ใช้ดูแยก): `Indicators/Seven_Lines_Exhaustion_Ind.mq5` → `MQL5/Indicators/`
