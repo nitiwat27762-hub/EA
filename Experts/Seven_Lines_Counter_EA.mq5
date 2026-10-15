@@ -3,6 +3,16 @@
 //|      Fast Mean-Reversion Z-Score EA for XAUUSD (Indicator v8.82)  |
 //+------------------------------------------------------------------+
 //
+// 🆕 v3.00
+//  • Z แบบเส้นถดถอย (Regression Z): เส้นกลาง = เส้นถดถอยเชิงเส้น 20 แท่ง (รวมแท่งปัจจุบัน)
+//    ตัวหาร = StdDev ของส่วนเบี่ยงเบนรอบเส้นถดถอย (ไม่นับความชันเทรนด์เป็นความผันผวน)
+//    + พื้นขั้นต่ำของตัวหาร = InpSigmaFloorMult × StdDev ของการเปลี่ยนแปลงราคาต่อแท่ง (กัน Z พุ่งตอนเทรนด์เรียบ)
+//      (ไม่ใช้ StdDev แบบ SMA เป็นพื้น เพราะมันพองตามความชันเทรนด์ — จะกด Z กลับไปเหมือนเดิม)
+//    → แก้ปัญหา SMA ชันแล้ว Z ไม่แตะ (Z แบบ SMA ในเทรนด์เส้นตรงตันที่ ≈ 1.65 เสมอ)
+//  • ป้องกันข่าว: ตัวจับช็อก (ช่วงแกว่งแท่ง ≥ 3×ATR → งดถึง 30 นาทีหลังแท่งช็อกปิด)
+//    + กรองความต่อเนื่อง (แท่งที่เพิ่งปิดค้างในโซนสุดขั้วฝั่งเดียวกัน → ไม่สวน)
+//    + ปฏิทินข่าว USD ระดับ High (ตัวเลือก, ใช้ไม่ได้ใน Strategy Tester)
+//
 // 🎯 นิยามระบบ (v2.00)
 //  สวนกลับค่าที่ผิดปกติ (Z ≥ +2.5 / Z ≤ −3.0) ที่ "ควรดีดกลับอย่างรวดเร็ว"
 //  ถ้าไม่ดีดกลับภายในเวลาที่กำหนด = สมมติฐานผิด → ออกทันที
@@ -22,12 +32,12 @@
 //  • ห้ามเข้า 1 ชม.แรกหลังตลาดเปิดสัปดาห์ / ปิดทุกไม้ 30 นาทีก่อนตลาดปิดสัปดาห์
 //
 // ⚡ การประหยัด CPU
-//  • Z: แคชผลรวมของแท่งที่ปิดแล้ว คำนวณใหม่เฉพาะตอนขึ้นแท่งใหม่ (ต่อ Tick ไม่กี่บรรทัดคณิต)
+//  • Z: แคช Σy, Σxy, Σy² ของแท่งที่ปิดแล้ว + ATR คำนวณเฉพาะตอนขึ้นแท่งใหม่ (ต่อ Tick ไม่กี่บรรทัดคณิต)
 //  • จัดการไม้ / Dashboard / เส้น ทำบน OnTimer 1 วินาที, ตรวจ SL ผ่าน OnTradeTransaction (ไม่ไล่ประวัติ)
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "2.00"
+#property version     "3.00"
 #property description "สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว สำหรับ XAUUSD (บัญชี Hedging)"
 #property tester_indicator "Seven_Lines_Exhaustion_Ind.ex5"
 
@@ -43,6 +53,7 @@ input double          InpSellZ             = 2.50;       // เฝ้า SELL �
 input double          InpBuyZ              = 3.00;       // เฝ้า BUY เมื่อ Z ≤ −ค่านี้ (สวนขาลง)
 input double          InpPullbackZ         = 0.20;       // ยิงเมื่อ Z ถอยจากจุดสุดขั้วอย่างน้อยเท่านี้ (0 = ยิงทันทีที่แตะ)
 input double          InpReArmBuffer       = 0.50;       // ระยะ Z ที่ต้องถอยกลับก่อนยิงไม้ถัดไปฝั่งเดิม
+input double          InpSigmaFloorMult    = 0.50;       // ตัวหาร Z ต้องไม่น้อยกว่า ค่านี้ × StdDev ของการเปลี่ยนแปลงราคาต่อแท่ง
 
 input group "=== 2. ออเดอร์ ==="
 input double          InpLot               = 0.01;       // Lot คงที่ต่อไม้
@@ -62,12 +73,24 @@ input group "=== 4. กฎดีดกลับเร็ว ==="
 input int             InpQuickWindow_Sec   = 60;         // ไม้ต้องเข้าระบบไล่จี้ภายในกี่วินาที ไม่งั้นตัดจบ (0 = ปิด)
 input int             InpSLCooldown_Min    = 5;          // พักเข้าไม้ทั้งสองฝั่งหลังชน SL ขาดทุน (นาที, 0 = ปิด)
 
-input group "=== 5. ตัวกรอง ==="
+input group "=== 5. ป้องกันข่าว / แรงต่อเนื่อง ==="
+input bool            InpUseShockFilter    = true;       // [ช็อก] งดเข้าเมื่อช่วงแกว่งแท่ง ≥ ATR × ตัวคูณ
+input int             InpShockATR_Period   = 14;         // [ช็อก] จำนวนแท่งของ ATR
+input double          InpShockATR_Mult     = 3.0;        // [ช็อก] ตัวคูณ ATR
+input int             InpShockBlock_Min    = 30;         // [ช็อก] งดเข้าไม้ต่อกี่นาทีหลังแท่งช็อกปิด
+input bool            InpUsePersistFilter  = true;       // [ต่อเนื่อง] ไม่สวนถ้าแท่งที่เพิ่งปิดค้างในโซนสุดขั้วฝั่งเดียวกัน
+input double          InpPersistZ          = 2.0;        // [ต่อเนื่อง] |Z ตอนปิดแท่ง| ที่ถือว่าค้างโซนสุดขั้ว
+input bool            InpUseNewsCalendar   = false;      // [ข่าว] งดเข้ารอบข่าวระดับ High (ใช้ไม่ได้ใน Tester)
+input string          InpNewsCurrency      = "USD";      // [ข่าว] สกุลเงินของข่าว
+input int             InpNewsBefore_Min    = 15;         // [ข่าว] งดก่อนข่าวกี่นาที
+input int             InpNewsAfter_Min     = 30;         // [ข่าว] งดหลังข่าวกี่นาที
+
+input group "=== 6. ตัวกรองทั่วไป ==="
 input double          InpMaxSpread_Pts     = 800.0;      // สเปรดสูงสุดที่ยอมให้เข้าไม้ (จุด)
 input int             InpNoTradeAfterOpen_Min = 60;      // ห้ามเข้าไม้หลังตลาดเปิดสัปดาห์ (นาที)
 input int             InpCloseBeforeClose_Min = 30;      // ปิดทุกไม้ก่อนตลาดปิดสัปดาห์ (นาที)
 
-input group "=== 6. การแสดงผล ==="
+input group "=== 7. การแสดงผล ==="
 input bool            InpShowDashboard     = true;       // แสดง Dashboard
 input bool            InpShowZLines        = true;       // แสดงเส้น Main / ระดับ SELL / ระดับ BUY
 input bool            InpShow7Lines        = true;       // แนบ Indicator 7 เส้น (ต้องมี Seven_Lines_Exhaustion_Ind.ex5)
@@ -107,16 +130,32 @@ CTrade    trade;
 double    g_pmult        = 1.0;
 bool      g_draw         = true;
 
-// --- Z engine (แคชแท่งที่ปิดแล้ว) ---
+// --- Z engine (แคชผลรวมของแท่งที่ปิดแล้ว, ค่าเลื่อนจุดอ้างอิง g_ref) ---
 datetime  g_zbar_time    = 0;
 bool      g_z_ready      = false;
 double    g_ref          = 0.0;
-double    g_sumS         = 0.0;
-double    g_sumQ         = 0.0;
+double    g_sumY         = 0.0;   // Σy  ของแท่งปิด (x = 0..n-2)
+double    g_sumXY        = 0.0;   // Σxy
+double    g_sumYY        = 0.0;   // Σy²
+double    g_sumD         = 0.0;   // Σd  ของส่วนต่างราคาปิดต่อแท่ง (ระหว่างแท่งปิด)
+double    g_sumDD        = 0.0;   // Σd²
+double    g_last_close   = 0.0;   // ราคาปิดแท่งล่าสุด (ใช้หาส่วนต่างของแท่งปัจจุบัน)
 bool      g_z_valid      = false;
-double    g_z            = 0.0;
-double    g_mean         = 0.0;
-double    g_std          = 0.0;
+double    g_z            = 0.0;   // Regression Z (ใช้ตัดสินใจ)
+double    g_center       = 0.0;   // ราคาเส้นกลาง (เส้นถดถอยที่แท่งปัจจุบัน)
+double    g_sigma        = 0.0;   // ตัวหารที่ใช้จริง
+bool      g_sigma_floor  = false; // ตัวหารถูกยกขึ้นเป็นพื้นขั้นต่ำ
+double    g_z_sma        = 0.0;   // Z แบบ SMA เดิม (แสดงเทียบ)
+double    g_prev_close_z = 0.0;   // Regression Z ของแท่งที่เพิ่งปิด (กรองความต่อเนื่อง)
+
+// --- ตัวจับช็อก / ข่าว ---
+double    g_atr          = 0.0;
+double    g_bar0_hi      = 0.0;
+double    g_bar0_lo      = 0.0;
+datetime  g_shock_until  = 0;
+datetime  g_news_times[];
+string    g_news_names[];
+datetime  g_news_loaded  = 0;
 
 // --- ไกยิง & ตัวกั้น ---
 SideState g_sell;
@@ -220,29 +259,113 @@ void PruneActivated() {
 }
 
 //====================================================================
-// 📐 Z-SCORE ENGINE
-//   แท่งที่ปิดแล้ว (Period−1 แท่ง) ถูกแคชเป็นผลรวมแบบเลื่อนจุดอ้างอิง (ลดความคลาดเคลื่อนทศนิยม)
-//   ต่อ Tick แค่บวก Bid เข้าไปแล้วคำนวณ Mean / StdDev แบบ Population (ตรงกับ Indicator v8.82)
+// 📐 Z-SCORE ENGINE (Regression Z)
+//   x = 0..n-1 (แท่งปัจจุบัน x = n-1), y = ราคาปิด − g_ref
+//   เส้นถดถอย y = a + b·x, ส่วนเบี่ยงเบน SSR = Σy² − aΣy − bΣxy
+//   Z_reg = (y_ปัจจุบัน − เส้นถดถอยที่ x=n-1) / max(σ_residual, FloorMult × σ_ส่วนต่างต่อแท่ง)
+//   แท่งปิดถูกแคชเป็น Σy, Σxy, Σy², Σd, Σd² → ต่อ Tick คำนวณ O(1)
 //====================================================================
+bool ComputeZ(double sy, double sxy, double syy, double y_last, double sd, double sdd,
+              double &z_reg, double &z_sma, double &fit, double &sigma, bool &floored) {
+   double n   = (double)InpZ_Period;
+   double sx  = n * (n - 1.0) / 2.0;
+   double sxx = (n - 1.0) * n * (2.0 * n - 1.0) / 6.0;
+
+   double mean   = sy / n;
+   double var_sm = syy / n - mean * mean;
+   if(var_sm <= 0.0) return false;
+   double sd_sma = MathSqrt(var_sm);
+
+   double denom = n * sxx - sx * sx;
+   double b     = (n * sxy - sx * sy) / denom;
+   double a     = (sy - b * sx) / n;
+   fit          = a + b * (n - 1.0);
+
+   double ssr = syy - a * sy - b * sxy;
+   if(ssr < 0.0) ssr = 0.0;
+   double sd_res = MathSqrt(ssr / n);
+
+   // StdDev ของส่วนต่างราคาต่อแท่ง (n-1 ค่า) — สเกลความผันผวนที่ไม่พองตามความชันเทรนด์
+   double m      = n - 1.0;
+   double md     = sd / m;
+   double var_d  = sdd / m - md * md;
+   double sd_min = (var_d > 0.0) ? MathSqrt(var_d) * InpSigmaFloorMult : 0.0;
+
+   floored = (sd_res < sd_min);
+   sigma   = floored ? sd_min : sd_res;
+   if(sigma <= 0.0) return false;
+
+   z_reg = (y_last - fit)  / sigma;
+   z_sma = (y_last - mean) / sd_sma;
+   return true;
+}
+
+// ATR ของแท่ง 2..P+1 (ไม่รวมแท่งที่เพิ่งปิด เพื่อไม่ให้แท่งช็อกดันฐานตัวเอง) + เช็คแท่งที่เพิ่งปิดเป็นแท่งช็อกไหม
+void UpdateAtrAndPrevShock(datetime bar0_time) {
+   g_atr = 0.0;
+   if(!InpUseShockFilter) return;
+   int    p   = InpShockATR_Period;
+   int    cnt = p + 2;
+   double h[], l[], c[];
+   if(CopyHigh (_Symbol, InpZ_Timeframe, 1, cnt, h) != cnt ||
+      CopyLow  (_Symbol, InpZ_Timeframe, 1, cnt, l) != cnt ||
+      CopyClose(_Symbol, InpZ_Timeframe, 1, cnt, c) != cnt) return;
+
+   double sum = 0.0;
+   for(int k = 1; k <= p; k++)
+      sum += MathMax(h[k], c[k - 1]) - MathMin(l[k], c[k - 1]);
+   g_atr = sum / p;
+
+   double range1 = h[cnt - 1] - l[cnt - 1];
+   if(g_atr > 0.0 && range1 >= InpShockATR_Mult * g_atr) {
+      datetime until = bar0_time + (datetime)(InpShockBlock_Min * 60);
+      if(until > g_shock_until) {
+         g_shock_until = until;
+         PrintFormat("⚡ แท่งที่เพิ่งปิดเป็นแท่งช็อก (ช่วงแกว่ง %.0f จุด = %.1f×ATR) → งดเข้าไม้ถึง %s",
+                     PriceToPts(range1), range1 / g_atr, TimeToString(until, TIME_MINUTES));
+      }
+   }
+}
+
 bool RefreshClosedBars() {
    datetime t0 = CurrentZBarTime();
    if(t0 == 0) return false;
    if(g_z_ready && t0 == g_zbar_time) return true;
 
-   int    need = InpZ_Period - 1;
+   int    n = InpZ_Period;
    double c[];
-   if(CopyClose(_Symbol, InpZ_Timeframe, 1, need, c) != need) {
+   if(CopyClose(_Symbol, InpZ_Timeframe, 1, n, c) != n) {
       g_z_ready = false;
       return false;
    }
-   g_ref  = c[need - 1];
-   g_sumS = 0.0;
-   g_sumQ = 0.0;
-   for(int k = 0; k < need; k++) {
-      double x = c[k] - g_ref;
-      g_sumS += x;
-      g_sumQ += x * x;
+   g_ref = c[n - 1];
+
+   // 1. Regression Z ของแท่งที่เพิ่งปิด (n แท่งปิด, แท่งล่าสุดอยู่ x = n-1)
+   double sy = 0.0, sxy = 0.0, syy = 0.0, sd = 0.0, sdd = 0.0;
+   for(int k = 0; k < n; k++) {
+      double y = c[k] - g_ref;
+      sy += y; sxy += k * y; syy += y * y;
+      if(k > 0) { double d = c[k] - c[k - 1]; sd += d; sdd += d * d; }
    }
+   double zr, zs, fit, sig;
+   bool   fl;
+   g_prev_close_z = ComputeZ(sy, sxy, syy, 0.0, sd, sdd, zr, zs, fit, sig, fl) ? zr : 0.0;
+
+   // 2. แคชแท่งปิด n-1 แท่งล่าสุดสำหรับคำนวณสด (x = 0..n-2) + ส่วนต่างระหว่างแท่งปิด (n-2 ค่า)
+   g_sumY = 0.0; g_sumXY = 0.0; g_sumYY = 0.0; g_sumD = 0.0; g_sumDD = 0.0;
+   for(int k = 1; k < n; k++) {
+      double y = c[k] - g_ref;
+      int    x = k - 1;
+      g_sumY += y; g_sumXY += x * y; g_sumYY += y * y;
+      if(k > 1) { double d = c[k] - c[k - 1]; g_sumD += d; g_sumDD += d * d; }
+   }
+   g_last_close = c[n - 1];
+
+   // 3. ATR / แท่งช็อก / ช่วงแกว่งของแท่งปัจจุบัน
+   UpdateAtrAndPrevShock(t0);
+   g_bar0_hi = iHigh(_Symbol, InpZ_Timeframe, 0);
+   g_bar0_lo = iLow (_Symbol, InpZ_Timeframe, 0);
+
    g_zbar_time = t0;
    g_z_ready   = true;
    return true;
@@ -252,17 +375,103 @@ bool UpdateZ(double bid) {
    g_z_valid = false;
    if(!RefreshClosedBars()) return false;
 
-   double n   = (double)InpZ_Period;
-   double x   = bid - g_ref;
-   double m   = (g_sumS + x) / n;
-   double var = (g_sumQ + x * x) / n - m * m;
-   if(var <= 0.0) return false;
+   if(bid > g_bar0_hi)                    g_bar0_hi = bid;
+   if(g_bar0_lo <= 0.0 || bid < g_bar0_lo) g_bar0_lo = bid;
 
-   g_std     = MathSqrt(var);
-   g_mean    = g_ref + m;
-   g_z       = (bid - g_mean) / g_std;
-   g_z_valid = true;
+   double n   = (double)InpZ_Period;
+   double y   = bid - g_ref;
+   double sy  = g_sumY  + y;
+   double sxy = g_sumXY + (n - 1.0) * y;
+   double syy = g_sumYY + y * y;
+   double d0  = bid - g_last_close;
+   double sd  = g_sumD  + d0;
+   double sdd = g_sumDD + d0 * d0;
+
+   double zr, zs, fit, sig;
+   bool   fl;
+   if(!ComputeZ(sy, sxy, syy, y, sd, sdd, zr, zs, fit, sig, fl)) return false;
+
+   g_z           = zr;
+   g_z_sma       = zs;
+   g_center      = g_ref + fit;
+   g_sigma       = sig;
+   g_sigma_floor = fl;
+   g_z_valid     = true;
    return true;
+}
+
+// ตัวจับช็อกระหว่างแท่ง: ช่วงแกว่งแท่งปัจจุบัน ≥ ATR × ตัวคูณ → งดถึง X นาทีหลังแท่งนี้ปิด
+void CheckShockLive() {
+   if(!InpUseShockFilter || g_atr <= 0.0) return;
+   double range0 = g_bar0_hi - g_bar0_lo;
+   if(range0 < InpShockATR_Mult * g_atr) return;
+   datetime until = g_zbar_time + (datetime)PeriodSeconds(InpZ_Timeframe) + (datetime)(InpShockBlock_Min * 60);
+   if(until > g_shock_until) {
+      g_shock_until = until;
+      PrintFormat("⚡ แท่งปัจจุบันเป็นแท่งช็อก (ช่วงแกว่ง %.0f จุด = %.1f×ATR) → งดเข้าไม้ถึง %s",
+                  PriceToPts(range0), range0 / g_atr, TimeToString(until, TIME_MINUTES));
+   }
+}
+
+bool PersistBlocked(int dir) {
+   if(!InpUsePersistFilter) return false;
+   return (dir == -1) ? (g_prev_close_z >= InpPersistZ) : (g_prev_close_z <= -InpPersistZ);
+}
+
+//====================================================================
+// 📰 ปฏิทินข่าว (โหลดทุก 10 นาที, ใช้เวลาเซิร์ฟเวอร์)
+//====================================================================
+bool NewsEnabled() {
+   return InpUseNewsCalendar && !MQLInfoInteger(MQL_TESTER);
+}
+
+void RefreshNews(datetime now) {
+   if(!NewsEnabled()) return;
+   if(g_news_loaded != 0 && now - g_news_loaded < 600) return;
+   g_news_loaded = now;
+
+   MqlCalendarValue vals[];
+   if(!CalendarValueHistory(vals, now - (datetime)(InpNewsAfter_Min * 60), now + (datetime)DAY_SEC, NULL, InpNewsCurrency)) {
+      PrintFormat("⚠️ โหลดปฏิทินข่าวไม่สำเร็จ (error %d)", GetLastError());
+      return;
+   }
+   ArrayResize(g_news_times, 0);
+   ArrayResize(g_news_names, 0);
+   for(int i = 0; i < ArraySize(vals); i++) {
+      MqlCalendarEvent ev;
+      if(!CalendarEventById(vals[i].event_id, ev)) continue;
+      if(ev.importance != CALENDAR_IMPORTANCE_HIGH) continue;
+      int n = ArraySize(g_news_times);
+      ArrayResize(g_news_times, n + 1);
+      ArrayResize(g_news_names, n + 1);
+      g_news_times[n] = vals[i].time;
+      g_news_names[n] = ev.name;
+   }
+}
+
+bool InNewsWindow(datetime now, string &name) {
+   if(!NewsEnabled()) return false;
+   for(int i = 0; i < ArraySize(g_news_times); i++) {
+      datetime t = g_news_times[i];
+      if(now >= t - (datetime)(InpNewsBefore_Min * 60) && now <= t + (datetime)(InpNewsAfter_Min * 60)) {
+         name = g_news_names[i];
+         return true;
+      }
+   }
+   return false;
+}
+
+string NextNewsText(datetime now) {
+   if(!InpUseNewsCalendar) return "";
+   if(!NewsEnabled())      return "📰 ปฏิทินข่าวใช้ไม่ได้ใน Tester";
+   string name;
+   if(InNewsWindow(now, name)) return "📰 ช่วงข่าว: " + name;
+   datetime best = 0;
+   string   best_name = "";
+   for(int i = 0; i < ArraySize(g_news_times); i++)
+      if(g_news_times[i] > now && (best == 0 || g_news_times[i] < best)) { best = g_news_times[i]; best_name = g_news_names[i]; }
+   if(best == 0) return "📰 ไม่มีข่าว High ใน 24 ชม.";
+   return StringFormat("📰 ข่าวถัดไป %s (อีก %s)", best_name, FormatDuration((long)(best - now)));
 }
 
 //====================================================================
@@ -488,6 +697,19 @@ void TryEntries(int ts, double bid, double ask) {
       g_last_status = side + " ผ่านเงื่อนไข แต่งดเปิดแท่งนี้ (เพิ่งตัดจบตามเวลา)";
       return;
    }
+   if(now < g_shock_until) {
+      g_last_status = side + " ผ่านเงื่อนไข แต่ติดตัวจับช็อก (อีก " + FormatDuration((long)(g_shock_until - now)) + ")";
+      return;
+   }
+   string news_name;
+   if(InNewsWindow(now, news_name)) {
+      g_last_status = side + " ผ่านเงื่อนไข แต่อยู่ในช่วงข่าว: " + news_name;
+      return;
+   }
+   if(PersistBlocked(dir)) {
+      g_last_status = StringFormat("%s ผ่านเงื่อนไข แต่แท่งก่อนหน้าปิดค้างโซนสุดขั้ว (Z ปิดแท่ง %+.2f)", side, g_prev_close_z);
+      return;
+   }
    if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED)) {
       g_last_status = side + " ผ่านเงื่อนไข แต่ปิด Algo Trading อยู่";
       return;
@@ -630,10 +852,10 @@ void MoveHLine(string name, double price, color clr, ENUM_LINE_STYLE style, int 
 
 void UpdateZLines() {
    if(!g_draw || !InpShowZLines || !g_z_valid) return;
-   double p_main = g_mean;
-   double p_sell = g_mean + InpSellZ * g_std;
-   double p_buy  = g_mean - InpBuyZ  * g_std;
-   MoveHLine(LINE_MAIN, p_main, clrGold,      STYLE_DOT,  1, "Main SMA (Z = 0)", g_line_main);
+   double p_main = g_center;
+   double p_sell = g_center + InpSellZ * g_sigma;
+   double p_buy  = g_center - InpBuyZ  * g_sigma;
+   MoveHLine(LINE_MAIN, p_main, clrGold,      STYLE_DOT,  1, "เส้นกลาง Regression (Z = 0)", g_line_main);
    MoveHLine(LINE_SELL, p_sell, clrOrangeRed, STYLE_DASH, 1, StringFormat("เฝ้า SELL เมื่อ Z ≥ +%.2f", InpSellZ), g_line_sell);
    MoveHLine(LINE_BUY,  p_buy,  clrAqua,      STYLE_DASH, 1, StringFormat("เฝ้า BUY เมื่อ Z ≤ −%.2f", InpBuyZ),  g_line_buy);
 }
@@ -655,6 +877,14 @@ string GuardText(datetime now) {
    if(g_block_bar != 0 && g_block_bar == CurrentZBarTime()) {
       if(out != "") out += " | ";
       out += "⛔ งดเปิดแท่งนี้ (ตัดจบตามเวลา)";
+   }
+   if(now < g_shock_until) {
+      if(out != "") out += " | ";
+      out += "⚡ ช็อก อีก " + FormatDuration((long)(g_shock_until - now));
+   }
+   if(InpUsePersistFilter && (g_prev_close_z >= InpPersistZ || g_prev_close_z <= -InpPersistZ)) {
+      if(out != "") out += " | ";
+      out += StringFormat("🧱 แท่งก่อนปิดค้างโซน (Z %+.2f) งดฝั่ง %s", g_prev_close_z, (g_prev_close_z > 0 ? "SELL" : "BUY"));
    }
    return (out == "") ? "ไม่มี" : out;
 }
@@ -696,11 +926,19 @@ void UpdateDashboard(int ts, datetime now) {
    int buys, sells;
    CountPositions(buys, sells);
 
-   string z_str = g_z_valid ? StringFormat("%+.2f | Main %s | StdDev %.0f จุด", g_z, DoubleToString(g_mean, _Digits), PriceToPts(g_std))
+   string z_str = g_z_valid ? StringFormat("Z_reg %+.2f | Z_SMA %+.2f | เส้นกลาง %s | σ %.0f จุด%s",
+                                           g_z, g_z_sma, DoubleToString(g_center, _Digits), PriceToPts(g_sigma),
+                                           (g_sigma_floor ? " (พื้นขั้นต่ำ)" : ""))
                             : "รอข้อมูลแท่งเทียน...";
+   string atr_str = (InpUseShockFilter && g_atr > 0.0)
+                    ? StringFormat("ATR%d %.0f จุด | ช่วงแกว่งแท่งนี้ %.1f×ATR (ช็อกที่ %.1f×)",
+                                   InpShockATR_Period, PriceToPts(g_atr), (g_bar0_hi - g_bar0_lo) / g_atr, InpShockATR_Mult)
+                    : "ตัวจับช็อกปิดอยู่";
+   string news_str = NextNewsText(now);
 
-   string msg = "=== 📊 7-Lines Counter EA v2.00 (Fast Mean-Reversion) ===\n";
+   string msg = "=== 📊 7-Lines Counter EA v3.00 (Regression Z + News Guard) ===\n";
    msg += StringFormat("Z (%s, %d) : %s\n", EnumToString(InpZ_Timeframe), InpZ_Period, z_str);
+   msg += StringFormat("Z แท่งที่เพิ่งปิด : %+.2f | %s%s\n", g_prev_close_z, atr_str, (news_str == "" ? "" : " | " + news_str));
    msg += StringFormat("SELL (Z ≥ +%.2f) : %s\n", InpSellZ, SideText(g_sell, true));
    msg += StringFormat("BUY  (Z ≤ −%.2f) : %s\n", InpBuyZ,  SideText(g_buy,  false));
    msg += StringFormat("ออเดอร์ : BUY %d / SELL %d (รวม %d/%d) | สเปรด %.0f / %.0f จุด\n",
@@ -754,6 +992,13 @@ int OnInit() {
       Print("❌ เวลาตัดจบ / เวลาพัก ต้องไม่ติดลบ");
       return(INIT_PARAMETERS_INCORRECT);
    }
+   if(InpSigmaFloorMult < 0.0 || InpShockATR_Period < 1 || InpShockATR_Mult <= 0.0 || InpShockBlock_Min < 0 ||
+      InpPersistZ <= 0.0 || InpNewsBefore_Min < 0 || InpNewsAfter_Min < 0) {
+      Print("❌ ค่าตัวกรองข่าว / ช็อก / ความต่อเนื่อง / พื้นตัวหาร ไม่ถูกต้อง");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(InpUseNewsCalendar && MQLInfoInteger(MQL_TESTER))
+      Print("ℹ️ ปฏิทินข่าวใช้ไม่ได้ใน Strategy Tester — ใช้เฉพาะตัวจับช็อกและกรองความต่อเนื่อง");
    if(AccountInfoInteger(ACCOUNT_MARGIN_MODE) != ACCOUNT_MARGIN_MODE_RETAIL_HEDGING) {
       Print("❌ EA นี้ต้องใช้บัญชีแบบ Hedging (บัญชี Netting จะรวมไม้เป็นโพซิชันเดียว)");
       return(INIT_FAILED);
@@ -786,11 +1031,18 @@ int OnInit() {
    g_next_try       = 0;
    g_cooldown_until = 0;
    g_block_bar      = 0;
+   g_shock_until    = 0;
+   g_news_loaded    = 0;
+   g_atr            = 0.0;
+   g_prev_close_z   = 0.0;
+   ArrayResize(g_news_times, 0);
+   ArrayResize(g_news_names, 0);
    g_last_comment   = "";
    g_line_main = g_line_sell = g_line_buy = 0.0;
    ArrayResize(g_activated, 0);
 
    RestoreGuardsFromHistory();
+   RefreshNews(ServerNow());
 
    ObjectsDeleteAll(0, OBJ_PREFIX);
    Attach7Lines();
@@ -816,6 +1068,7 @@ void OnTick() {
    if(bid <= 0.0 || ask <= 0.0) return;
    if(!UpdateZ(bid)) return;
 
+   CheckShockLive();
    UpdateSides();
 
    int ts = GetTimeState(ServerNow());
@@ -829,6 +1082,7 @@ void OnTick() {
 void OnTimer() {
    datetime now = ServerNow();
    int ts = GetTimeState(now);
+   RefreshNews(now);
 
    // 1. บังคับปิดก่อนตลาดปิดสัปดาห์ / จัดการไม้ (เปิดไล่จี้, ตัดจบตามเวลา, ขยับโล่)
    if(ts == TS_CLOSING)     CloseAllPositions();
