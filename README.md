@@ -16,7 +16,10 @@ indicator EA XAUUSD
 
 | ไฟล์ | เวอร์ชัน | รายละเอียด |
 |---|---|---|
-| `Experts/Seven_Lines_Counter_EA.mq5` | 5.00 | EA สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว (XAUUSD, บัญชี Hedging) |
+| `Experts/Seven_Lines_Counter_EA.mq5` | 5.10 | EA สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว (XAUUSD, บัญชี Hedging) |
+
+### Counter EA v5.10
+- มาร์กจุดเปิดไม้ (ลูกศร + เส้นประถึงปลายไส้ + ระยะห่างเป็นจุด) จาก Deal History และไม้ใหม่
 
 ### Counter EA v5.00
 - เข้าไม้ทันทีเมื่อ Z_reg และ Z_SMA ถึงเกณฑ์ทั้งคู่ (เลือกได้: ทั้งคู่ / Reg / SMA) — ไม่รอ Z ย่อแล้ว

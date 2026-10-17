@@ -13,6 +13,11 @@
 //    + กรองความต่อเนื่อง (แท่งที่เพิ่งปิดค้างในโซนสุดขั้วฝั่งเดียวกัน → ไม่สวน)
 //    + ปฏิทินข่าว USD ระดับ High (ตัวเลือก, ใช้ไม่ได้ใน Strategy Tester)
 //
+// 🆕 v5.10: มาร์กจุดเปิดไม้บนกราฟ
+//  • ลูกศร ณ ราคาเปิดไม้ + เส้นประแนวตั้งถึงปลายไส้ของแท่ง (TF ของ Z) + ระยะห่างเป็นจุด
+//    SELL วัดถึง High / BUY วัดถึง Low — แท่งที่ยังไม่ปิดอัปเดตทุก 1 วินาที
+//  • ดึงจาก Deal History ของ EA (Magic) ย้อนหลังเท่าช่วงป้าย Z + ไม้ใหม่ผ่าน OnTradeTransaction
+//
 // 🆕 v5.00: ตรรกะเข้าไม้ใหม่ + วาดย้อนหลังแบบเบา
 //  • ไม้แรก: Z_reg และ Z_SMA ถึงเกณฑ์ทั้งคู่ (ตาม InpEntryLogic) → ยิงทันที ไม่รอ Z ย่อ
 //  • ไม้ซ้ำ: ทุก InpReEntryWait_Sec วินาทีหลังไม้ล่าสุด ถ้า Z ยังถึงเกณฑ์ → ยิงอีก (สูงสุด InpMaxPositions)
@@ -70,7 +75,7 @@
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "5.00"
+#property version     "5.10"
 #property description "สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว สำหรับ XAUUSD (บัญชี Hedging)"
 
 #include <Trade\Trade.mqh>
@@ -144,6 +149,7 @@ input bool            InpShowBarZ          = true;       // แสดงป้�
 input int             InpBarZBars          = 2000;       // จำนวนแท่งย้อนหลัง (TF ของ Z) ที่แสดงป้าย
 input int             InpBarZFontSize      = 8;          // ขนาดตัวอักษรป้าย Z บนแท่ง
 input double          InpBarZOffset_Pts    = 300.0;      // ระยะห่างป้ายจากไส้เทียน (จุด)
+input bool            InpShowEntryMarks    = true;       // มาร์กจุดเปิดไม้ + ระยะห่างถึงปลายไส้เทียน
 
 input group "=== 8. สี ==="
 input color           InpClrMain           = clrGold;           // เส้น Main (SMA)
@@ -166,6 +172,9 @@ input color           InpClrLiveNormal     = clrSilver;         // ป้าย 
 input color           InpClrBarZSell       = clrOrangeRed;      // ป้าย Z บนแท่ง: ฝั่ง SELL (เหนือแท่ง)
 input color           InpClrBarZBuy        = clrDeepSkyBlue;    // ป้าย Z บนแท่ง: ฝั่ง BUY (ใต้แท่ง)
 input color           InpClrBarZOther      = clrGray;           // ป้าย Z บนแท่ง: ถึงเกณฑ์ไม่ครบตามเงื่อนไขเข้าไม้
+input color           InpClrEntrySell      = clrRed;            // มาร์กจุดเปิด SELL
+input color           InpClrEntryBuy       = clrLime;           // มาร์กจุดเปิด BUY
+input color           InpClrEntryGap       = clrYellow;         // เส้นประ + ตัวเลขระยะห่างถึงปลายไส้
 
 //====================================================================
 // 🔒 INTERNAL
@@ -1326,6 +1335,150 @@ void UpdateBarZLabels() {
 }
 
 //====================================================================
+// 📍 มาร์กจุดเปิดไม้ + ระยะห่างถึงปลายไส้เทียน (TF ของ Z)
+//====================================================================
+struct EntryMark {
+   ulong    deal;
+   datetime t;
+   double   price;
+   int      dir;      // -1 SELL / 1 BUY
+   bool     final;    // แท่งปิดแล้ว ระยะห่างคงที่
+   string   cmt;
+};
+EntryMark g_marks[];
+
+int FindMark(ulong deal) {
+   for(int i = ArraySize(g_marks) - 1; i >= 0; i--)
+      if(g_marks[i].deal == deal) return i;
+   return -1;
+}
+
+void DrawEntryMark(EntryMark &m) {
+   int shift = iBarShift(_Symbol, InpZ_Timeframe, m.t, false);
+   if(shift < 0) return;
+   double   hi  = iHigh(_Symbol, InpZ_Timeframe, shift);
+   double   lo  = iLow (_Symbol, InpZ_Timeframe, shift);
+   datetime bt  = iTime(_Symbol, InpZ_Timeframe, shift);
+   if(hi <= 0.0 || lo <= 0.0) return;
+
+   bool   is_sell = (m.dir == -1);
+   double tip     = is_sell ? hi : lo;
+   double gap     = is_sell ? (hi - m.price) : (m.price - lo);
+   if(gap < 0.0) gap = 0.0;
+   double gap_pts = PriceToPts(gap);
+   double range   = hi - lo;
+   string ds      = IntegerToString((long)m.deal);
+
+   // 1. ลูกศรที่ราคาเปิดไม้
+   string na = OBJ_PREFIX + "EN_A_" + ds;
+   if(ObjectFind(0, na) < 0) {
+      ObjectCreate(0, na, is_sell ? OBJ_ARROW_SELL : OBJ_ARROW_BUY, 0, m.t, m.price);
+      ObjectSetInteger(0, na, OBJPROP_COLOR, is_sell ? InpClrEntrySell : InpClrEntryBuy);
+      ObjectSetInteger(0, na, OBJPROP_WIDTH, 2);
+      ObjectSetInteger(0, na, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, na, OBJPROP_HIDDEN, true);
+   }
+
+   // 2. เส้นประแนวตั้งจากราคาเปิดไม้ถึงปลายไส้
+   string ng = OBJ_PREFIX + "EN_G_" + ds;
+   if(ObjectFind(0, ng) < 0) {
+      ObjectCreate(0, ng, OBJ_TREND, 0, m.t, m.price, m.t, tip);
+      ObjectSetInteger(0, ng, OBJPROP_COLOR, InpClrEntryGap);
+      ObjectSetInteger(0, ng, OBJPROP_STYLE, STYLE_DOT);
+      ObjectSetInteger(0, ng, OBJPROP_WIDTH, 1);
+      ObjectSetInteger(0, ng, OBJPROP_RAY_RIGHT, false);
+      ObjectSetInteger(0, ng, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, ng, OBJPROP_HIDDEN, true);
+   }
+   ObjectMove(0, ng, 1, m.t, tip);
+
+   // 3. ตัวเลขระยะห่าง
+   string nt = OBJ_PREFIX + "EN_T_" + ds;
+   if(ObjectFind(0, nt) < 0) {
+      ObjectCreate(0, nt, OBJ_TEXT, 0, m.t, m.price);
+      ObjectSetString(0,  nt, OBJPROP_FONT, "Arial");
+      ObjectSetInteger(0, nt, OBJPROP_FONTSIZE, 8);
+      ObjectSetInteger(0, nt, OBJPROP_COLOR, InpClrEntryGap);
+      ObjectSetInteger(0, nt, OBJPROP_ANCHOR, ANCHOR_LEFT);
+      ObjectSetInteger(0, nt, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, nt, OBJPROP_HIDDEN, true);
+   }
+   ObjectSetString(0, nt, OBJPROP_TEXT, StringFormat("   %s ห่างไส้ %.0f", (is_sell ? "S" : "B"), gap_pts));
+
+   string tipText = StringFormat("%s @ %s | %s แท่ง %s = %s | ห่างปลายไส้ %.0f จุด (%.0f%% ของช่วงแท่ง)%s | %s",
+                                 (is_sell ? "SELL" : "BUY"), DoubleToString(m.price, _Digits),
+                                 (is_sell ? "High" : "Low"), TimeToString(bt, TIME_DATE|TIME_MINUTES),
+                                 DoubleToString(tip, _Digits), gap_pts, (range > 0.0 ? 100.0 * gap / range : 0.0),
+                                 (shift == 0 ? " (แท่งยังไม่ปิด)" : ""), m.cmt);
+   ObjectSetString(0, na, OBJPROP_TOOLTIP, tipText);
+   ObjectSetString(0, ng, OBJPROP_TOOLTIP, tipText);
+   ObjectSetString(0, nt, OBJPROP_TOOLTIP, tipText);
+
+   m.final = (shift > 0);
+}
+
+// เพิ่มมาร์กจาก deal เปิดไม้ของ EA (deal ต้องถูกเลือกใน history แล้ว)
+void AddEntryMarkFromDeal(ulong deal) {
+   if(!g_draw || !InpShowEntryMarks) return;
+   if(HistoryDealGetInteger(deal, DEAL_MAGIC) != InpMagic) return;
+   if(HistoryDealGetString(deal, DEAL_SYMBOL) != _Symbol) return;
+   if(HistoryDealGetInteger(deal, DEAL_ENTRY) != DEAL_ENTRY_IN) return;
+   long type = HistoryDealGetInteger(deal, DEAL_TYPE);
+   if(type != DEAL_TYPE_BUY && type != DEAL_TYPE_SELL) return;
+   if(FindMark(deal) >= 0) return;
+
+   int n = ArraySize(g_marks);
+   ArrayResize(g_marks, n + 1);
+   g_marks[n].deal  = deal;
+   g_marks[n].t     = (datetime)HistoryDealGetInteger(deal, DEAL_TIME);
+   g_marks[n].price = HistoryDealGetDouble(deal, DEAL_PRICE);
+   g_marks[n].dir   = (type == DEAL_TYPE_SELL) ? -1 : 1;
+   g_marks[n].final = false;
+   g_marks[n].cmt   = HistoryDealGetString(deal, DEAL_COMMENT);
+   DrawEntryMark(g_marks[n]);
+}
+
+// โหลดไม้ย้อนหลังจาก Deal History เท่าช่วงป้าย Z
+void LoadEntryMarksFromHistory() {
+   if(!g_draw || !InpShowEntryMarks) return;
+   datetime from = iTime(_Symbol, InpZ_Timeframe, InpBarZBars);
+   if(from == 0) from = ServerNow() - (datetime)(PeriodSeconds(InpZ_Timeframe) * InpBarZBars);
+   if(!HistorySelect(from, ServerNow() + 60)) return;
+   int total = HistoryDealsTotal();
+   for(int i = 0; i < total; i++) {
+      ulong deal = HistoryDealGetTicket(i);
+      if(deal > 0) AddEntryMarkFromDeal(deal);
+   }
+}
+
+void DeleteEntryMarkObjects(ulong deal) {
+   string ds = IntegerToString((long)deal);
+   ObjectDelete(0, OBJ_PREFIX + "EN_A_" + ds);
+   ObjectDelete(0, OBJ_PREFIX + "EN_G_" + ds);
+   ObjectDelete(0, OBJ_PREFIX + "EN_T_" + ds);
+}
+
+// ทุก 1 วินาที: อัปเดตระยะห่างของมาร์กในแท่งที่ยังไม่ปิด + ลบมาร์กที่เก่าเกินช่วง (ตอนขึ้นแท่งใหม่)
+datetime g_marks_bar = 0;
+void UpdateEntryMarks() {
+   if(!g_draw || !InpShowEntryMarks) return;
+   for(int i = ArraySize(g_marks) - 1; i >= 0; i--)
+      if(!g_marks[i].final) DrawEntryMark(g_marks[i]);
+
+   datetime t0 = CurrentZBarTime();
+   if(t0 == 0 || t0 == g_marks_bar) return;
+   g_marks_bar = t0;
+   datetime cutoff = iTime(_Symbol, InpZ_Timeframe, InpBarZBars);
+   if(cutoff == 0) return;
+   int n = ArraySize(g_marks), w = 0;
+   for(int i = 0; i < n; i++) {
+      if(g_marks[i].t < cutoff) { DeleteEntryMarkObjects(g_marks[i].deal); continue; }
+      g_marks[w++] = g_marks[i];
+   }
+   if(w != n) ArrayResize(g_marks, w);
+}
+
+//====================================================================
 // 🎨 DISPLAY
 //====================================================================
 void MoveHLine(string name, double price, color clr, ENUM_LINE_STYLE style, int width, string tip, double &cache) {
@@ -1594,6 +1747,8 @@ int OnInit() {
    g_prev_close_zr  = 0.0;
    g_prev_close_zs  = 0.0;
    ArrayResize(g_seg_times, 0);
+   ArrayResize(g_marks, 0);
+   g_marks_bar = 0;
    ArrayResize(g_news_times, 0);
    ArrayResize(g_news_names, 0);
    g_last_comment   = "";
@@ -1608,6 +1763,7 @@ int OnInit() {
 
    ObjectsDeleteAll(0, OBJ_PREFIX);
    if(g_draw && InpShow7Lines) RebuildLines();   // ถ้าประวัติยังโหลดไม่ครบ จะลองใหม่ใน OnTimer
+   LoadEntryMarksFromHistory();
 
    EventSetTimer(1);
    return(INIT_SUCCEEDED);
@@ -1653,6 +1809,7 @@ void OnTimer() {
       UpdateZLines();
       UpdateLinesLive();
       UpdateBarZLabels();
+      UpdateEntryMarks();
       if(bid > 0.0) UpdateLiveZLabel(bid);
       UpdateDashboard(ts, now);
       ChartRedraw(0);   // ให้วัตถุแสดงผลแม้ช่วงที่ไม่มี Tick เข้า
@@ -1676,5 +1833,6 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    if(trans.type != TRADE_TRANSACTION_DEAL_ADD || trans.deal == 0) return;
    if(!HistoryDealSelect(trans.deal)) return;
    InspectClosingDeal(trans.deal, false, 0);
+   AddEntryMarkFromDeal(trans.deal);
 }
 //+------------------------------------------------------------------+
