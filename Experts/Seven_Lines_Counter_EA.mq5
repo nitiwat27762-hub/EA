@@ -13,6 +13,13 @@
 //    + กรองความต่อเนื่อง (แท่งที่เพิ่งปิดค้างในโซนสุดขั้วฝั่งเดียวกัน → ไม่สวน)
 //    + ปฏิทินข่าว USD ระดับ High (ตัวเลือก, ใช้ไม่ได้ใน Strategy Tester)
 //
+// 🆕 v4.30: Z แบบ SMA20 เทียบกับ Z แบบเส้นถดถอย
+//  • Z_SMA = (Bid − SMA20) / StdDev20 (รวมแท่งปัจจุบัน แบบเดียวกับ v1-v2) คำนวณคู่กับ Z_reg ทุก Tick
+//  • เลือกได้ว่าจะใช้ Z ตัวไหนตัดสินใจเข้าไม้ (InpZMode) — อีกตัวแสดงเพื่อเปรียบเทียบ
+//  • เส้นแนวนอนชุด SMA (กลาง / SELL / BUY) แยกสีจากชุด Regression
+//  • ป้าย Z สดและป้ายบนแท่งแสดงทั้ง R (Regression) และ S (SMA)
+//    ป้ายบนแท่งขึ้นเมื่อตัวใดตัวหนึ่งถึงเกณฑ์ — สีเต็มถ้าตัวที่ใช้เทรดถึง, สีเทาถ้าถึงแค่ตัวเทียบ
+//
 // 🆕 v4.20
 //  • ตั้งสีเส้น / ป้ายทุกอย่างได้เองจาก Input (กลุ่ม 8)
 //  • ป้ายค่า Z บนทุกแท่ง (TF ของ Z) ที่ Z ถึงเกณฑ์: เหนือแท่ง = Z ที่ราคา High (≥ +SellZ),
@@ -55,7 +62,7 @@
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "4.20"
+#property version     "4.30"
 #property description "สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว สำหรับ XAUUSD (บัญชี Hedging)"
 
 #include <Trade\Trade.mqh>
@@ -63,9 +70,15 @@
 //====================================================================
 // 🎛️ INPUT PARAMETERS
 //====================================================================
+enum ENUM_Z_MODE {
+   ZMODE_REGRESSION = 0,   // Regression (เส้นถดถอย)
+   ZMODE_SMA        = 1    // SMA20 (แบบเดิม)
+};
+
 input group "=== 1. Z-Score & จุดเข้า ==="
 input ENUM_TIMEFRAMES InpZ_Timeframe       = PERIOD_M15; // Timeframe ที่ใช้คำนวณ Z
 input int             InpZ_Period          = 20;         // จำนวนแท่งของ SMA / StdDev
+input ENUM_Z_MODE     InpZMode             = ZMODE_REGRESSION; // Z ที่ใช้ตัดสินใจเข้าไม้ (อีกตัวแสดงเทียบ)
 input double          InpSellZ             = 2.50;       // เฝ้า SELL เมื่อ Z ≥ +ค่านี้ (สวนขาขึ้น)
 input double          InpBuyZ              = 3.00;       // เฝ้า BUY เมื่อ Z ≤ −ค่านี้ (สวนขาลง)
 input double          InpPullbackZ         = 0.20;       // ยิงเมื่อ Z ถอยจากจุดสุดขั้วอย่างน้อยเท่านี้ (0 = ยิงทันทีที่แตะ)
@@ -109,7 +122,8 @@ input int             InpCloseBeforeClose_Min = 30;      // ปิดทุก�
 
 input group "=== 7. การแสดงผล ==="
 input bool            InpShowDashboard     = true;       // แสดง Dashboard
-input bool            InpShowZLines        = true;       // แสดงเส้น Main / ระดับ SELL / ระดับ BUY
+input bool            InpShowZLines        = true;       // แสดงเส้นแนวนอนระดับ Z ชุด Regression
+input bool            InpShowSmaZLines     = true;       // แสดงเส้นแนวนอนระดับ Z ชุด SMA20 (เปรียบเทียบ)
 input bool            InpShow7Lines        = true;       // วาดเส้น 7 เส้น (คำนวณในตัว EA บน TF ของกราฟ)
 input int             InpFastPeriod        = 10;         // Fast Period ของเส้น L1-L5
 input int             InpLinesBars         = 200;        // จำนวนแท่งย้อนหลังที่วาดเส้น 7 เส้น
@@ -132,12 +146,16 @@ input color           InpClrL6             = clrOrange;         // เส้น 
 input color           InpClrZCenter        = clrGold;           // เส้นแนวนอน: เส้นกลาง Z = 0
 input color           InpClrZSellLine      = clrOrangeRed;      // เส้นแนวนอน: ระดับ SELL
 input color           InpClrZBuyLine       = clrAqua;           // เส้นแนวนอน: ระดับ BUY
+input color           InpClrSmaCenter      = clrDarkKhaki;      // เส้นแนวนอน SMA20: เส้นกลาง Z = 0
+input color           InpClrSmaSellLine    = clrLightSalmon;    // เส้นแนวนอน SMA20: ระดับ SELL
+input color           InpClrSmaBuyLine     = clrPaleTurquoise;  // เส้นแนวนอน SMA20: ระดับ BUY
 input color           InpClrLiveSell       = clrOrangeRed;      // ป้าย Z สด: ถึงเกณฑ์ SELL
 input color           InpClrLiveBuy        = clrDeepSkyBlue;    // ป้าย Z สด: ถึงเกณฑ์ BUY
 input color           InpClrLiveNear       = clrGold;           // ป้าย Z สด: ใกล้เกณฑ์
 input color           InpClrLiveNormal     = clrSilver;         // ป้าย Z สด: ปกติ
 input color           InpClrBarZSell       = clrOrangeRed;      // ป้าย Z บนแท่ง: ฝั่ง SELL (เหนือแท่ง)
 input color           InpClrBarZBuy        = clrDeepSkyBlue;    // ป้าย Z บนแท่ง: ฝั่ง BUY (ใต้แท่ง)
+input color           InpClrBarZOther      = clrGray;           // ป้าย Z บนแท่ง: ถึงเกณฑ์แค่ตัวเทียบ (ไม่ใช่ตัวที่ใช้เทรด)
 
 //====================================================================
 // 🔒 INTERNAL
@@ -152,6 +170,9 @@ const string LINE_MAIN      = "7LCEA_MAIN";
 const string LINE_SELL      = "7LCEA_SELL_Z";
 const string LINE_BUY       = "7LCEA_BUY_Z";
 const string LABEL_LIVE_Z   = "7LCEA_LIVE_Z";
+const string LINE_SMA_MAIN  = "7LCEA_SMA_MAIN";
+const string LINE_SMA_SELL  = "7LCEA_SMA_SELL_Z";
+const string LINE_SMA_BUY   = "7LCEA_SMA_BUY_Z";
 const long   WEEK_SEC       = 604800;
 const long   DAY_SEC        = 86400;
 const long   MERGE_GAP_SEC  = 12 * 3600;   // ช่องว่าง session สั้นกว่านี้ (เช่นพักรายวัน) ถือว่าตลาดยังเปิด
@@ -183,12 +204,17 @@ double    g_sumD         = 0.0;   // Σd  ของส่วนต่างร�
 double    g_sumDD        = 0.0;   // Σd²
 double    g_last_close   = 0.0;   // ราคาปิดแท่งล่าสุด (ใช้หาส่วนต่างของแท่งปัจจุบัน)
 bool      g_z_valid      = false;
-double    g_z            = 0.0;   // Regression Z (ใช้ตัดสินใจ)
-double    g_center       = 0.0;   // ราคาเส้นกลาง (เส้นถดถอยที่แท่งปัจจุบัน)
-double    g_sigma        = 0.0;   // ตัวหารที่ใช้จริง
+double    g_z            = 0.0;   // Z ที่ใช้ตัดสินใจ (ตาม InpZMode)
+double    g_z_reg        = 0.0;   // Regression Z
+double    g_center       = 0.0;   // ราคาเส้นกลาง Regression (เส้นถดถอยที่แท่งปัจจุบัน)
+double    g_sigma        = 0.0;   // ตัวหาร Regression ที่ใช้จริง
+double    g_sma_mean     = 0.0;   // ราคา SMA20 (รวมแท่งปัจจุบัน)
+double    g_sma_sd       = 0.0;   // StdDev20
 bool      g_sigma_floor  = false; // ตัวหารถูกยกขึ้นเป็นพื้นขั้นต่ำ
 double    g_z_sma        = 0.0;   // Z แบบ SMA เดิม (แสดงเทียบ)
-double    g_prev_close_z = 0.0;   // Regression Z ของแท่งที่เพิ่งปิด (กรองความต่อเนื่อง)
+double    g_prev_close_z = 0.0;   // Z ของแท่งที่เพิ่งปิด ตาม InpZMode (กรองความต่อเนื่อง)
+double    g_prev_close_zr = 0.0;  // Regression Z ของแท่งที่เพิ่งปิด
+double    g_prev_close_zs = 0.0;  // SMA Z ของแท่งที่เพิ่งปิด
 
 // --- ตัวจับช็อก / ข่าว ---
 double    g_atr          = 0.0;
@@ -223,6 +249,9 @@ string    g_last_comment = "";
 double    g_line_main    = 0.0;
 double    g_line_sell    = 0.0;
 double    g_line_buy     = 0.0;
+double    g_line_sma_main = 0.0;
+double    g_line_sma_sell = 0.0;
+double    g_line_sma_buy  = 0.0;
 string    g_live_z_text  = "";
 int       g_live_z_y     = -1;
 
@@ -320,15 +349,16 @@ void PruneActivated() {
 //   แท่งปิดถูกแคชเป็น Σy, Σxy, Σy², Σd, Σd² → ต่อ Tick คำนวณ O(1)
 //====================================================================
 bool ComputeZ(double sy, double sxy, double syy, double y_last, double sd, double sdd,
-              double &z_reg, double &z_sma, double &fit, double &sigma, bool &floored) {
+              double &z_reg, double &z_sma, double &fit, double &sigma, bool &floored,
+              double &mean, double &sd_sma) {
    double n   = (double)InpZ_Period;
    double sx  = n * (n - 1.0) / 2.0;
    double sxx = (n - 1.0) * n * (2.0 * n - 1.0) / 6.0;
 
-   double mean   = sy / n;
+   mean          = sy / n;
    double var_sm = syy / n - mean * mean;
    if(var_sm <= 0.0) return false;
-   double sd_sma = MathSqrt(var_sm);
+   sd_sma        = MathSqrt(var_sm);
 
    double denom = n * sxx - sx * sx;
    double b     = (n * sxy - sx * sy) / denom;
@@ -401,9 +431,16 @@ bool RefreshClosedBars() {
       sy += y; sxy += k * y; syy += y * y;
       if(k > 0) { double d = c[k] - c[k - 1]; sd += d; sdd += d * d; }
    }
-   double zr, zs, fit, sig;
+   double zr, zs, fit, sig, mn, ssd;
    bool   fl;
-   g_prev_close_z = ComputeZ(sy, sxy, syy, 0.0, sd, sdd, zr, zs, fit, sig, fl) ? zr : 0.0;
+   if(ComputeZ(sy, sxy, syy, 0.0, sd, sdd, zr, zs, fit, sig, fl, mn, ssd)) {
+      g_prev_close_zr = zr;
+      g_prev_close_zs = zs;
+   } else {
+      g_prev_close_zr = 0.0;
+      g_prev_close_zs = 0.0;
+   }
+   g_prev_close_z = (InpZMode == ZMODE_SMA) ? g_prev_close_zs : g_prev_close_zr;
 
    // 2. แคชแท่งปิด n-1 แท่งล่าสุดสำหรับคำนวณสด (x = 0..n-2) + ส่วนต่างระหว่างแท่งปิด (n-2 ค่า)
    g_sumY = 0.0; g_sumXY = 0.0; g_sumYY = 0.0; g_sumD = 0.0; g_sumDD = 0.0;
@@ -441,12 +478,15 @@ bool UpdateZ(double bid) {
    double sd  = g_sumD  + d0;
    double sdd = g_sumDD + d0 * d0;
 
-   double zr, zs, fit, sig;
+   double zr, zs, fit, sig, mn, ssd;
    bool   fl;
-   if(!ComputeZ(sy, sxy, syy, y, sd, sdd, zr, zs, fit, sig, fl)) return false;
+   if(!ComputeZ(sy, sxy, syy, y, sd, sdd, zr, zs, fit, sig, fl, mn, ssd)) return false;
 
-   g_z           = zr;
+   g_z_reg       = zr;
    g_z_sma       = zs;
+   g_z           = (InpZMode == ZMODE_SMA) ? zs : zr;
+   g_sma_mean    = g_ref + mn;
+   g_sma_sd      = ssd;
    g_center      = g_ref + fit;
    g_sigma       = sig;
    g_sigma_floor = fl;
@@ -1062,7 +1102,7 @@ string   g_zl_names[];
 datetime g_zl_times[];
 datetime g_barz_bar = 0;   // แท่งปัจจุบัน (TF ของ Z) ตอนอัปเดตล่าสุด
 
-bool ZForBarPrice(const double &c[], int j, double price, double &z) {
+bool ZForBarPrice(const double &c[], int j, double price, double &z_reg, double &z_sma) {
    int n = InpZ_Period;
    if(j < n - 1) return false;
    double ref = c[j - 1];
@@ -1077,9 +1117,9 @@ bool ZForBarPrice(const double &c[], int j, double price, double &z) {
    sy += y; sxy += (n - 1) * y; syy += y * y;
    double d0 = price - c[j - 1];
    sd += d0; sdd += d0 * d0;
-   double zs, fit, sig;
+   double fit, sig, mn, ssd;
    bool   fl;
-   return ComputeZ(sy, sxy, syy, y, sd, sdd, z, zs, fit, sig, fl);
+   return ComputeZ(sy, sxy, syy, y, sd, sdd, z_reg, z_sma, fit, sig, fl, mn, ssd);
 }
 
 void RememberBarZLabel(string name, datetime t) {
@@ -1092,39 +1132,42 @@ void RememberBarZLabel(string name, datetime t) {
    g_zl_times[n] = t;
 }
 
-// วาด/ลบป้าย Z ของแท่งเวลา t ตามค่า z_hi (ที่ High) และ z_lo (ที่ Low)
-void SetBarZLabels(datetime t, double hi, double lo, double z_hi, double z_lo, bool hi_ok, bool lo_ok) {
+// วาด/ลบป้าย Z ของแท่งเวลา t — zr/zs = Regression/SMA Z ที่ High [0] และ Low [1]
+void SetBarZLabels(datetime t, double hi, double lo, const double &zr[], const double &zs[], const bool &ok[]) {
    double off = PtsToPrice(InpBarZOffset_Pts);
    string ts  = IntegerToString((long)t);
-   string nS  = OBJ_PREFIX + "ZL_S_" + ts;
-   string nB  = OBJ_PREFIX + "ZL_B_" + ts;
-
-   bool show_s = hi_ok && z_hi >= InpSellZ;
-   bool show_b = lo_ok && z_lo <= -InpBuyZ;
+   bool   use_sma = (InpZMode == ZMODE_SMA);
 
    for(int side = 0; side < 2; side++) {
-      string name  = (side == 0) ? nS : nB;
-      bool   show  = (side == 0) ? show_s : show_b;
+      string name = OBJ_PREFIX + (side == 0 ? "ZL_S_" : "ZL_B_") + ts;
+      bool   hit_r, hit_s;
+      if(side == 0) { hit_r = zr[0] >= InpSellZ;  hit_s = zs[0] >= InpSellZ; }
+      else          { hit_r = zr[1] <= -InpBuyZ;  hit_s = zs[1] <= -InpBuyZ; }
+      bool show = ok[side] && (hit_r || hit_s);
       if(!show) { if(ObjectFind(0, name) >= 0) ObjectDelete(0, name); continue; }
 
-      double z     = (side == 0) ? z_hi : z_lo;
+      bool  hit_active = use_sma ? hit_s : hit_r;
+      color clr = !hit_active ? InpClrBarZOther : (side == 0 ? InpClrBarZSell : InpClrBarZBuy);
       double price = (side == 0) ? (hi + off) : (lo - off);
+
       if(ObjectFind(0, name) < 0) {
          ObjectCreate(0, name, OBJ_TEXT, 0, t, price);
          ObjectSetString(0,  name, OBJPROP_FONT, "Arial Bold");
          ObjectSetInteger(0, name, OBJPROP_FONTSIZE, InpBarZFontSize);
          ObjectSetInteger(0, name, OBJPROP_ANCHOR, (side == 0) ? ANCHOR_LOWER : ANCHOR_UPPER);
-         ObjectSetInteger(0, name, OBJPROP_COLOR, (side == 0) ? InpClrBarZSell : InpClrBarZBuy);
          ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
          ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
          RememberBarZLabel(name, t);
       }
       ObjectSetInteger(0, name, OBJPROP_TIME, t);
       ObjectSetDouble(0,  name, OBJPROP_PRICE, ND(price));
-      ObjectSetString(0,  name, OBJPROP_TEXT, StringFormat("%+.2f", z));
+      ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+      ObjectSetString(0,  name, OBJPROP_TEXT, StringFormat("R%+.2f | S%+.2f", zr[side], zs[side]));
       ObjectSetString(0,  name, OBJPROP_TOOLTIP,
-                      StringFormat("%s | Z ที่ %s = %+.2f", TimeToString(t, TIME_DATE|TIME_MINUTES),
-                                   (side == 0 ? "High" : "Low"), z));
+                      StringFormat("%s | ที่ %s: Z_reg %+.2f%s / Z_SMA %+.2f%s (ใช้เทรด: %s)",
+                                   TimeToString(t, TIME_DATE|TIME_MINUTES), (side == 0 ? "High" : "Low"),
+                                   zr[side], (hit_r ? " ✓" : ""), zs[side], (hit_s ? " ✓" : ""),
+                                   (use_sma ? "SMA" : "Regression")));
    }
 }
 
@@ -1139,11 +1182,12 @@ void EvaluateClosedBars(int from_shift, int bars) {
       CopyLow  (_Symbol, InpZ_Timeframe, from_shift, cnt, l) != cnt ||
       CopyTime (_Symbol, InpZ_Timeframe, from_shift, cnt, t) != cnt) return;
 
+   double zr[2], zs[2];
+   bool   ok[2];
    for(int j = n - 1; j < cnt; j++) {
-      double z_hi = 0.0, z_lo = 0.0;
-      bool hi_ok = ZForBarPrice(c, j, h[j], z_hi);
-      bool lo_ok = ZForBarPrice(c, j, l[j], z_lo);
-      SetBarZLabels(t[j], h[j], l[j], z_hi, z_lo, hi_ok, lo_ok);
+      ok[0] = ZForBarPrice(c, j, h[j], zr[0], zs[0]);
+      ok[1] = ZForBarPrice(c, j, l[j], zr[1], zs[1]);
+      SetBarZLabels(t[j], h[j], l[j], zr, zs, ok);
    }
 }
 
@@ -1182,20 +1226,20 @@ void UpdateBarZLabels() {
 
    // แท่งปัจจุบัน: ใช้แคช Z สด + High/Low ที่ติดตามไว้
    double n  = (double)InpZ_Period;
-   double zr[2];
+   double zr[2], zs[2], px[2];
    bool   ok[2];
-   double px[2];
    px[0] = g_bar0_hi;
    px[1] = g_bar0_lo;
    for(int s = 0; s < 2; s++) {
       double y   = px[s] - g_ref;
       double d0  = px[s] - g_last_close;
-      double zs, fit, sig;
+      double fit, sig, mn, ssd;
       bool   fl;
+      zr[s] = 0.0; zs[s] = 0.0;
       ok[s] = (px[s] > 0.0) && ComputeZ(g_sumY + y, g_sumXY + (n - 1.0) * y, g_sumYY + y * y, y,
-                                        g_sumD + d0, g_sumDD + d0 * d0, zr[s], zs, fit, sig, fl);
+                                        g_sumD + d0, g_sumDD + d0 * d0, zr[s], zs[s], fit, sig, fl, mn, ssd);
    }
-   SetBarZLabels(t0, g_bar0_hi, g_bar0_lo, zr[0], zr[1], ok[0], ok[1]);
+   SetBarZLabels(t0, g_bar0_hi, g_bar0_lo, zr, zs, ok);
 }
 
 //====================================================================
@@ -1236,7 +1280,9 @@ void UpdateLiveZLabel(double bid) {
       return;
    }
 
-   string text = StringFormat("Z %+.2f ▶", g_z);
+   string text = (InpZMode == ZMODE_SMA)
+                 ? StringFormat("S %+.2f  (R %+.2f) ▶", g_z_sma, g_z_reg)
+                 : StringFormat("R %+.2f  (S %+.2f) ▶", g_z_reg, g_z_sma);
    if(g_sell.watching)
       text = StringFormat("SELL สุดขั้ว %+.2f → ยิง ≤ %+.2f  |  ", g_sell.extreme, g_sell.extreme - InpPullbackZ) + text;
    else if(g_buy.watching)
@@ -1265,20 +1311,29 @@ void UpdateLiveZLabel(double bid) {
    ObjectSetString(0,  LABEL_LIVE_Z, OBJPROP_TEXT, text);
    ObjectSetInteger(0, LABEL_LIVE_Z, OBJPROP_COLOR, LiveZColor(g_z));
    ObjectSetString(0,  LABEL_LIVE_Z, OBJPROP_TOOLTIP,
-                   StringFormat("Z_reg %+.3f | Z_SMA %+.3f | เส้นกลาง %s", g_z, g_z_sma, DoubleToString(g_center, _Digits)));
+                   StringFormat("Z_reg %+.3f (กลาง %s) | Z_SMA %+.3f (SMA20 %s) | ใช้เทรด: %s",
+                                g_z_reg, DoubleToString(g_center, _Digits), g_z_sma, DoubleToString(g_sma_mean, _Digits),
+                                (InpZMode == ZMODE_SMA ? "SMA" : "Regression")));
 
    g_live_z_text = text;
    g_live_z_y    = y;
 }
 
 void UpdateZLines() {
-   if(!g_draw || !InpShowZLines || !g_z_valid) return;
-   double p_main = g_center;
-   double p_sell = g_center + InpSellZ * g_sigma;
-   double p_buy  = g_center - InpBuyZ  * g_sigma;
-   MoveHLine(LINE_MAIN, p_main, InpClrZCenter,   STYLE_DOT,  1, "เส้นกลาง Regression (Z = 0)", g_line_main);
-   MoveHLine(LINE_SELL, p_sell, InpClrZSellLine, STYLE_DASH, 1, StringFormat("เฝ้า SELL เมื่อ Z ≥ +%.2f", InpSellZ), g_line_sell);
-   MoveHLine(LINE_BUY,  p_buy,  InpClrZBuyLine,  STYLE_DASH, 1, StringFormat("เฝ้า BUY เมื่อ Z ≤ −%.2f", InpBuyZ),  g_line_buy);
+   if(!g_draw || !g_z_valid) return;
+   string tag_r = (InpZMode == ZMODE_REGRESSION) ? " (ใช้เทรด)" : " (เทียบ)";
+   string tag_s = (InpZMode == ZMODE_SMA)        ? " (ใช้เทรด)" : " (เทียบ)";
+
+   if(InpShowZLines) {
+      MoveHLine(LINE_MAIN, g_center,                     InpClrZCenter,   STYLE_DOT,  1, "[Regression] เส้นกลาง Z = 0" + tag_r, g_line_main);
+      MoveHLine(LINE_SELL, g_center + InpSellZ * g_sigma, InpClrZSellLine, STYLE_DASH, 1, StringFormat("[Regression] SELL Z ≥ +%.2f", InpSellZ) + tag_r, g_line_sell);
+      MoveHLine(LINE_BUY,  g_center - InpBuyZ  * g_sigma, InpClrZBuyLine,  STYLE_DASH, 1, StringFormat("[Regression] BUY Z ≤ −%.2f", InpBuyZ) + tag_r,  g_line_buy);
+   }
+   if(InpShowSmaZLines) {
+      MoveHLine(LINE_SMA_MAIN, g_sma_mean,                      InpClrSmaCenter,   STYLE_DOT,     1, "[SMA20] เส้นกลาง Z = 0" + tag_s, g_line_sma_main);
+      MoveHLine(LINE_SMA_SELL, g_sma_mean + InpSellZ * g_sma_sd, InpClrSmaSellLine, STYLE_DASHDOT, 1, StringFormat("[SMA20] SELL Z ≥ +%.2f", InpSellZ) + tag_s, g_line_sma_sell);
+      MoveHLine(LINE_SMA_BUY,  g_sma_mean - InpBuyZ  * g_sma_sd, InpClrSmaBuyLine,  STYLE_DASHDOT, 1, StringFormat("[SMA20] BUY Z ≤ −%.2f", InpBuyZ) + tag_s,  g_line_sma_buy);
+   }
 }
 
 string SideText(const SideState &s, bool is_sell) {
@@ -1347,19 +1402,22 @@ void UpdateDashboard(int ts, datetime now) {
    int buys, sells;
    CountPositions(buys, sells);
 
-   string z_str = g_z_valid ? StringFormat("Z_reg %+.2f | Z_SMA %+.2f | เส้นกลาง %s | σ %.0f จุด%s",
-                                           g_z, g_z_sma, DoubleToString(g_center, _Digits), PriceToPts(g_sigma),
-                                           (g_sigma_floor ? " (พื้นขั้นต่ำ)" : ""))
-                            : "รอข้อมูลแท่งเทียน...";
+   string mode_r = (InpZMode == ZMODE_REGRESSION) ? "▶" : " ";
+   string mode_s = (InpZMode == ZMODE_SMA)        ? "▶" : " ";
+   string z_str = g_z_valid
+      ? StringFormat("%sZ_reg %+.2f (กลาง %s, σ %.0f จุด%s)  vs  %sZ_SMA %+.2f (SMA20 %s, σ %.0f จุด) | ต่าง %+.2f",
+                     mode_r, g_z_reg, DoubleToString(g_center, _Digits), PriceToPts(g_sigma), (g_sigma_floor ? " พื้น" : ""),
+                     mode_s, g_z_sma, DoubleToString(g_sma_mean, _Digits), PriceToPts(g_sma_sd), g_z_reg - g_z_sma)
+      : "รอข้อมูลแท่งเทียน...";
    string atr_str = (InpUseShockFilter && g_atr > 0.0)
                     ? StringFormat("ATR%d %.0f จุด | ช่วงแกว่งแท่งนี้ %.1f×ATR (ช็อกที่ %.1f×)",
                                    InpShockATR_Period, PriceToPts(g_atr), (g_bar0_hi - g_bar0_lo) / g_atr, InpShockATR_Mult)
                     : "ตัวจับช็อกปิดอยู่";
    string news_str = NextNewsText(now);
 
-   string msg = "=== 📊 7-Lines Counter EA v4.20 (Regression Z + News Guard) ===\n";
+   string msg = StringFormat("=== 📊 7-Lines Counter EA v4.30 (ใช้เทรด: Z_%s) ===\n", (InpZMode == ZMODE_SMA ? "SMA" : "reg"));
    msg += StringFormat("Z (%s, %d) : %s\n", EnumToString(InpZ_Timeframe), InpZ_Period, z_str);
-   msg += StringFormat("Z แท่งที่เพิ่งปิด : %+.2f | %s%s\n", g_prev_close_z, atr_str, (news_str == "" ? "" : " | " + news_str));
+   msg += StringFormat("Z แท่งที่เพิ่งปิด : R %+.2f / S %+.2f | %s%s\n", g_prev_close_zr, g_prev_close_zs, atr_str, (news_str == "" ? "" : " | " + news_str));
    msg += StringFormat("SELL (Z ≥ +%.2f) : %s\n", InpSellZ, SideText(g_sell, true));
    msg += StringFormat("BUY  (Z ≤ −%.2f) : %s\n", InpBuyZ,  SideText(g_buy,  false));
    msg += StringFormat("ออเดอร์ : BUY %d / SELL %d (รวม %d/%d) | สเปรด %.0f / %.0f จุด\n",
@@ -1451,6 +1509,7 @@ int OnInit() {
    ArrayResize(g_news_names, 0);
    g_last_comment   = "";
    g_line_main = g_line_sell = g_line_buy = 0.0;
+   g_line_sma_main = g_line_sma_sell = g_line_sma_buy = 0.0;
    g_live_z_text = ""; g_live_z_y = -1;
    g_lines_status = "ยังไม่ได้วาด";
    ArrayResize(g_activated, 0);
