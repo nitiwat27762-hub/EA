@@ -1405,7 +1405,7 @@ struct EntryMark {
    datetime t;
    double   price;
    int      dir;      // -1 SELL / 1 BUY
-   bool     final;    // แท่งปิดแล้ว ระยะห่างคงที่
+   bool     closed_bar;    // แท่งปิดแล้ว ระยะห่างคงที่
    string   cmt;
 };
 EntryMark g_marks[];
@@ -1477,7 +1477,7 @@ void DrawEntryMark(EntryMark &m) {
    ObjectSetString(0, ng, OBJPROP_TOOLTIP, tipText);
    ObjectSetString(0, nt, OBJPROP_TOOLTIP, tipText);
 
-   m.final = (shift > 0);
+   m.closed_bar = (shift > 0);
 }
 
 // เพิ่มมาร์กจาก deal เปิดไม้ของ EA (deal ต้องถูกเลือกใน history แล้ว)
@@ -1496,7 +1496,7 @@ void AddEntryMarkFromDeal(ulong deal) {
    g_marks[n].t     = (datetime)HistoryDealGetInteger(deal, DEAL_TIME);
    g_marks[n].price = HistoryDealGetDouble(deal, DEAL_PRICE);
    g_marks[n].dir   = (type == DEAL_TYPE_SELL) ? -1 : 1;
-   g_marks[n].final = false;
+   g_marks[n].closed_bar = false;
    g_marks[n].cmt   = HistoryDealGetString(deal, DEAL_COMMENT);
    DrawEntryMark(g_marks[n]);
 }
@@ -1526,7 +1526,7 @@ datetime g_marks_bar = 0;
 void UpdateEntryMarks() {
    if(!g_draw || !InpShowEntryMarks) return;
    for(int i = ArraySize(g_marks) - 1; i >= 0; i--)
-      if(!g_marks[i].final) DrawEntryMark(g_marks[i]);
+      if(!g_marks[i].closed_bar) DrawEntryMark(g_marks[i]);
 
    datetime t0 = CurrentZBarTime();
    if(t0 == 0 || t0 == g_marks_bar) return;
