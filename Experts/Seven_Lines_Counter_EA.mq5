@@ -13,6 +13,12 @@
 //    + กรองความต่อเนื่อง (แท่งที่เพิ่งปิดค้างในโซนสุดขั้วฝั่งเดียวกัน → ไม่สวน)
 //    + ปฏิทินข่าว USD ระดับ High (ตัวเลือก, ใช้ไม่ได้ใน Strategy Tester)
 //
+// 🆕 v6.10: ย้อนหลังบนกราฟ
+//  • จุดเข้าไม้แรก "จำลอง" ย้อนหลัง (ประมาณจาก OHLC ของ TF ของ Z): ถึงเกณฑ์ตามเงื่อนไข + ไกยิง (ต้องถอยกลับก่อน)
+//    + กรองความต่อเนื่อง + ตัวจับช็อก + เวลาตลาด — ราคาเข้าหาด้วย bisection หาราคาแรกที่ Z ถึงเกณฑ์
+//    (ไม่จำลองไม้ซ้ำ / พักหลัง SL / ตัด 60 วินาที / เพดานไม้ เพราะต้องรู้ลำดับราคาในแท่ง)
+//  • ช่วงข่าวย้อนหลัง: เส้นแนวตั้งเวลาข่าว + แถบช่วงงดเทรด (ก่อน/หลัง) จากปฏิทิน MT5 (ใช้ไม่ได้ใน Tester)
+//
 // 🆕 v6.00: ไม้ซ้ำแบบ Double-tap (แทนการนับเวลา 10 วินาที)
 //  • หลังเปิดไม้ ต้องเห็น "เริ่มดีด" ก่อน: Z ถอยจากจุดสุดขั้ว ≥ InpReEntryRetreatZ
 //  • แล้ว "ถูกกระชากกลับ": Z ถึงเกณฑ์อีกครั้ง (ข้ามกลับจากใต้เกณฑ์ หรือดันกลับ ≥ InpReEntryRetreatZ จากจุดต่ำสุดหลังดีด)
@@ -83,7 +89,7 @@
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "6.00"
+#property version     "6.10"
 #property description "สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว สำหรับ XAUUSD (บัญชี Hedging)"
 
 #include <Trade\Trade.mqh>
@@ -159,6 +165,9 @@ input int             InpBarZBars          = 2000;       // จำนวนแ�
 input int             InpBarZFontSize      = 8;          // ขนาดตัวอักษรป้าย Z บนแท่ง
 input double          InpBarZOffset_Pts    = 300.0;      // ระยะห่างป้ายจากไส้เทียน (จุด)
 input bool            InpShowEntryMarks    = true;       // มาร์กจุดเปิดไม้ + ระยะห่างถึงปลายไส้เทียน
+input bool            InpShowSimEntries    = true;       // มาร์กจุดเข้าไม้แรก "จำลอง" ย้อนหลัง (ประมาณจาก OHLC)
+input bool            InpShowNewsHistory   = true;       // แสดงช่วงข่าวบนกราฟ (ย้อนหลัง + 24 ชม.ข้างหน้า)
+input bool            InpNewsIncludeMedium = false;      // แสดงข่าวระดับ Medium ด้วย (การงดเทรดยังใช้เฉพาะ High)
 
 input group "=== 8. สี ==="
 input color           InpClrMain           = clrGold;           // เส้น Main (SMA)
@@ -184,6 +193,10 @@ input color           InpClrBarZOther      = clrGray;           // ป้าย 
 input color           InpClrEntrySell      = clrRed;            // มาร์กจุดเปิด SELL
 input color           InpClrEntryBuy       = clrLime;           // มาร์กจุดเปิด BUY
 input color           InpClrEntryGap       = clrYellow;         // เส้นประ + ตัวเลขระยะห่างถึงปลายไส้
+input color           InpClrSimSell        = clrViolet;         // มาร์กจำลอง: SELL
+input color           InpClrSimBuy         = clrPaleGreen;      // มาร์กจำลอง: BUY
+input color           InpClrNewsLine       = clrMediumPurple;   // เส้นเวลาข่าว
+input color           InpClrNewsZone       = C'45,35,70';       // แถบช่วงงดเทรดรอบข่าว
 
 //====================================================================
 // 🔒 INTERNAL
@@ -1542,6 +1555,275 @@ void UpdateEntryMarks() {
 }
 
 //====================================================================
+// 🧪 จุดเข้าไม้แรกจำลองย้อนหลัง (ประมาณจาก OHLC ของ TF ของ Z)
+//====================================================================
+string g_sim_names[];
+string g_sim_seen[];
+
+void SimRemember(string name) {
+   int n = ArraySize(g_sim_seen);
+   ArrayResize(g_sim_seen, n + 1);
+   g_sim_seen[n] = name;
+}
+
+// หาราคาแรก (จาก open ไปทาง High/Low) ที่ Z ถึงเกณฑ์ตามเงื่อนไขเข้าไม้ ด้วย bisection
+bool SimEntryPrice(const double &c[], int j, double open, double ext, int dir, double &price) {
+   double zr, zs;
+   if(!ZForBarPrice(c, j, ext, zr, zs)) return false;
+   bool hit_ext = (dir == -1) ? LogicHit(zr >= InpSellZ, zs >= InpSellZ) : LogicHit(zr <= -InpBuyZ, zs <= -InpBuyZ);
+   if(!hit_ext) return false;
+   if(ZForBarPrice(c, j, open, zr, zs) &&
+      ((dir == -1) ? LogicHit(zr >= InpSellZ, zs >= InpSellZ) : LogicHit(zr <= -InpBuyZ, zs <= -InpBuyZ))) {
+      price = open;   // เปิดแท่งมาก็ถึงเกณฑ์แล้ว (gap)
+      return true;
+   }
+   double a = open, b = ext;   // a = ยังไม่ถึง, b = ถึง
+   for(int it = 0; it < 30; it++) {
+      double m = 0.5 * (a + b);
+      bool h = ZForBarPrice(c, j, m, zr, zs) &&
+               ((dir == -1) ? LogicHit(zr >= InpSellZ, zs >= InpSellZ) : LogicHit(zr <= -InpBuyZ, zs <= -InpBuyZ));
+      if(h) b = m; else a = m;
+   }
+   price = ND(b);
+   return true;
+}
+
+void DrawSimMark(datetime t, int dir, double price, double tip, double range, string reason_tip) {
+   bool   is_sell = (dir == -1);
+   string ts      = IntegerToString((long)t) + (is_sell ? "_S" : "_B");
+   string na = OBJ_PREFIX + "SIM_A_" + ts;
+   string ng = OBJ_PREFIX + "SIM_G_" + ts;
+   string nt = OBJ_PREFIX + "SIM_T_" + ts;
+   double gap_pts = PriceToPts(MathAbs(tip - price));
+   color  clr     = is_sell ? InpClrSimSell : InpClrSimBuy;
+
+   if(ObjectFind(0, na) < 0) {
+      ObjectCreate(0, na, is_sell ? OBJ_ARROW_SELL : OBJ_ARROW_BUY, 0, t, price);
+      ObjectSetInteger(0, na, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, na, OBJPROP_HIDDEN, true);
+   }
+   ObjectSetInteger(0, na, OBJPROP_COLOR, clr);
+   ObjectMove(0, na, 0, t, price);
+
+   if(ObjectFind(0, ng) < 0) {
+      ObjectCreate(0, ng, OBJ_TREND, 0, t, price, t, tip);
+      ObjectSetInteger(0, ng, OBJPROP_STYLE, STYLE_DOT);
+      ObjectSetInteger(0, ng, OBJPROP_RAY_RIGHT, false);
+      ObjectSetInteger(0, ng, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, ng, OBJPROP_HIDDEN, true);
+   }
+   ObjectSetInteger(0, ng, OBJPROP_COLOR, clr);
+   ObjectMove(0, ng, 0, t, price);
+   ObjectMove(0, ng, 1, t, tip);
+
+   if(ObjectFind(0, nt) < 0) {
+      ObjectCreate(0, nt, OBJ_TEXT, 0, t, price);
+      ObjectSetString(0,  nt, OBJPROP_FONT, "Arial");
+      ObjectSetInteger(0, nt, OBJPROP_FONTSIZE, 7);
+      ObjectSetInteger(0, nt, OBJPROP_ANCHOR, ANCHOR_RIGHT);
+      ObjectSetInteger(0, nt, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, nt, OBJPROP_HIDDEN, true);
+   }
+   ObjectSetInteger(0, nt, OBJPROP_COLOR, clr);
+   ObjectMove(0, nt, 0, t, price);
+   ObjectSetString(0, nt, OBJPROP_TEXT, StringFormat("จำลอง %s %.0f   ", (is_sell ? "S" : "B"), gap_pts));
+
+   string tipText = StringFormat("จำลองไม้แรก %s @ ~%s | ห่างปลายไส้ %.0f จุด (%.0f%% ของช่วงแท่ง) | %s",
+                                 (is_sell ? "SELL" : "BUY"), DoubleToString(price, _Digits), gap_pts,
+                                 (range > 0.0 ? 100.0 * MathAbs(tip - price) / range : 0.0), reason_tip);
+   ObjectSetString(0, na, OBJPROP_TOOLTIP, tipText);
+   ObjectSetString(0, ng, OBJPROP_TOOLTIP, tipText);
+   ObjectSetString(0, nt, OBJPROP_TOOLTIP, tipText);
+   SimRemember(na); SimRemember(ng); SimRemember(nt);
+}
+
+// จำลองทั้งหน้าต่าง InpBarZBars (เรียกตอนเริ่ม และทุกครั้งที่ขึ้นแท่งใหม่ของ TF ของ Z)
+void SimulateHistoryEntries() {
+   if(!g_draw || !InpShowSimEntries) return;
+   int n   = InpZ_Period;
+   int P   = InpShockATR_Period;
+   int pre = n + P + 2;
+   int cnt = InpBarZBars + pre;
+   double c[], o[], h[], l[];
+   datetime t[];
+   if(CopyClose(_Symbol, InpZ_Timeframe, 1, cnt, c) != cnt ||
+      CopyOpen (_Symbol, InpZ_Timeframe, 1, cnt, o) != cnt ||
+      CopyHigh (_Symbol, InpZ_Timeframe, 1, cnt, h) != cnt ||
+      CopyLow  (_Symbol, InpZ_Timeframe, 1, cnt, l) != cnt ||
+      CopyTime (_Symbol, InpZ_Timeframe, 1, cnt, t) != cnt) return;
+
+   ArrayResize(g_sim_seen, 0);
+   bool     armed[2]   = {false, false};   // [0] SELL, [1] BUY
+   datetime shock_until = 0;
+   long     bar_sec     = PeriodSeconds(InpZ_Timeframe);
+
+   for(int j = n + P + 1; j < cnt; j++) {
+      // ATR ของแท่ง j-1-P .. j-2 (เหมือน live: ไม่รวมแท่งที่เพิ่งปิด)
+      double sum = 0.0;
+      for(int k = j - 1 - P; k <= j - 2; k++)
+         sum += MathMax(h[k], c[k - 1]) - MathMin(l[k], c[k - 1]);
+      double atr = sum / P;
+
+      // แท่งก่อนหน้าเป็นแท่งช็อก → งดถึง 30 นาทีหลังแท่งนั้นปิด
+      if(InpUseShockFilter && atr > 0.0 && (h[j - 1] - l[j - 1]) >= InpShockATR_Mult * atr) {
+         datetime until = t[j] + (datetime)(InpShockBlock_Min * 60);
+         if(until > shock_until) shock_until = until;
+      }
+
+      // Z ตอนปิดแท่งก่อนหน้า (กรองความต่อเนื่อง)
+      double pzr = 0.0, pzs = 0.0;
+      bool   pok = ZForBarPrice(c, j - 1, c[j - 1], pzr, pzs);
+
+      bool in_window = (j >= cnt - InpBarZBars);
+      bool time_ok   = (GetTimeState(t[j]) == TS_OPEN);
+
+      for(int side = 0; side < 2; side++) {
+         int    dir = (side == 0) ? -1 : 1;
+         double ext = (side == 0) ? h[j] : l[j];
+         double opp = (side == 0) ? l[j] : h[j];
+
+         if(armed[side]) {
+            double price;
+            if(SimEntryPrice(c, j, o[j], ext, dir, price)) {
+               string why = "";
+               bool   blocked = false;
+               if(!time_ok)                     { blocked = true; why = "ติดเวลาตลาด"; }
+               else if(t[j] < shock_until)      { blocked = true; why = "ติดตัวจับช็อก (แท่งก่อนหน้า)"; }
+               else if(InpUseShockFilter && atr > 0.0 && MathAbs(price - o[j]) >= InpShockATR_Mult * atr) {
+                  blocked = true; why = "ติดตัวจับช็อก (ในแท่ง)";
+                  datetime until = t[j] + (datetime)bar_sec + (datetime)(InpShockBlock_Min * 60);
+                  if(until > shock_until) shock_until = until;
+               }
+               else if(InpUsePersistFilter && pok &&
+                       ((dir == -1) ? LogicHit(pzr >= InpPersistZ, pzs >= InpPersistZ)
+                                    : LogicHit(pzr <= -InpPersistZ, pzs <= -InpPersistZ))) {
+                  blocked = true; why = "ติดกรองความต่อเนื่อง";
+               }
+               if(!blocked) {
+                  armed[side] = false;
+                  if(in_window) {
+                     double zr, zs;
+                     ZForBarPrice(c, j, price, zr, zs);
+                     DrawSimMark(t[j], dir, price, ext, h[j] - l[j],
+                                 StringFormat("Z_reg %+.2f / Z_SMA %+.2f ตอนเข้า | ประมาณจาก OHLC (ไม่รวมไม้ซ้ำ/พัก SL/ตัด 60 วิ)", zr, zs));
+                  }
+                  continue;   // เข้าไม้แล้ว ไกยิงต้องรอถอยกลับในแท่งถัดไป
+               }
+            }
+         }
+         // ไกยิง: Z ที่ปลายไส้ฝั่งตรงข้ามถอยกลับเกินระดับ ReArm
+         double zr, zs;
+         if(ZForBarPrice(c, j, opp, zr, zs)) {
+            bool retreat = (dir == -1) ? LogicHit(zr < InpSellZ - InpReArmBuffer, zs < InpSellZ - InpReArmBuffer)
+                                       : LogicHit(zr > -InpBuyZ + InpReArmBuffer, zs > -InpBuyZ + InpReArmBuffer);
+            if(retreat) armed[side] = true;
+         }
+      }
+   }
+
+   // ลบมาร์กจำลองที่ไม่อยู่ในรอบนี้แล้ว
+   for(int i = ArraySize(g_sim_names) - 1; i >= 0; i--) {
+      bool keep = false;
+      for(int k = ArraySize(g_sim_seen) - 1; k >= 0; k--)
+         if(g_sim_seen[k] == g_sim_names[i]) { keep = true; break; }
+      if(!keep) ObjectDelete(0, g_sim_names[i]);
+   }
+   ArrayResize(g_sim_names, ArraySize(g_sim_seen));
+   ArrayCopy(g_sim_names, g_sim_seen);
+}
+
+datetime g_sim_bar = 0;
+void UpdateSimEntries() {
+   if(!g_draw || !InpShowSimEntries) return;
+   datetime t0 = CurrentZBarTime();
+   if(t0 == 0 || t0 == g_sim_bar) return;
+   g_sim_bar = t0;
+   SimulateHistoryEntries();
+}
+
+//====================================================================
+// 📰 ช่วงข่าวบนกราฟ (ย้อนหลังเท่าช่วงป้าย Z + 24 ชม.ข้างหน้า)
+//====================================================================
+datetime g_newsviz_loaded = 0;
+string   g_newsviz_names[];
+
+void DrawNewsEvent(datetime t, string title, string detail) {
+   string ts = IntegerToString((long)t);
+   string nv = OBJ_PREFIX + "NEWS_V_" + ts;
+   string nz = OBJ_PREFIX + "NEWS_Z_" + ts;
+
+   if(ObjectFind(0, nv) < 0) {
+      ObjectCreate(0, nv, OBJ_VLINE, 0, t, 0);
+      ObjectSetInteger(0, nv, OBJPROP_COLOR, InpClrNewsLine);
+      ObjectSetInteger(0, nv, OBJPROP_STYLE, STYLE_DASH);
+      ObjectSetInteger(0, nv, OBJPROP_WIDTH, 1);
+      ObjectSetInteger(0, nv, OBJPROP_BACK, true);
+      ObjectSetInteger(0, nv, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, nv, OBJPROP_HIDDEN, true);
+      ObjectSetString(0,  nv, OBJPROP_TOOLTIP, detail);
+      ObjectSetString(0,  nv, OBJPROP_TEXT, title);
+      int n = ArraySize(g_newsviz_names);
+      ArrayResize(g_newsviz_names, n + 2);
+      g_newsviz_names[n] = nv; g_newsviz_names[n + 1] = nz;
+   }
+   else {
+      string old = ObjectGetString(0, nv, OBJPROP_TOOLTIP);
+      if(StringFind(old, detail) < 0) ObjectSetString(0, nv, OBJPROP_TOOLTIP, old + "\n" + detail);
+   }
+
+   if(ObjectFind(0, nz) < 0) {
+      double top = SymbolInfoDouble(_Symbol, SYMBOL_BID) * 10.0;
+      ObjectCreate(0, nz, OBJ_RECTANGLE, 0, t - (datetime)(InpNewsBefore_Min * 60), 0.0,
+                   t + (datetime)(InpNewsAfter_Min * 60), top);
+      ObjectSetInteger(0, nz, OBJPROP_COLOR, InpClrNewsZone);
+      ObjectSetInteger(0, nz, OBJPROP_FILL, true);
+      ObjectSetInteger(0, nz, OBJPROP_BACK, true);
+      ObjectSetInteger(0, nz, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, nz, OBJPROP_HIDDEN, true);
+   }
+   ObjectSetString(0, nz, OBJPROP_TOOLTIP, ObjectGetString(0, nv, OBJPROP_TOOLTIP));
+}
+
+void LoadNewsHistory() {
+   if(!g_draw || !InpShowNewsHistory || MQLInfoInteger(MQL_TESTER)) return;
+   datetime now = ServerNow();
+   if(g_newsviz_loaded != 0 && now - g_newsviz_loaded < 3600) return;
+   g_newsviz_loaded = now;
+
+   datetime from = iTime(_Symbol, InpZ_Timeframe, InpBarZBars);
+   if(from == 0) from = now - (datetime)(PeriodSeconds(InpZ_Timeframe) * InpBarZBars);
+   MqlCalendarValue vals[];
+   if(!CalendarValueHistory(vals, from, now + (datetime)DAY_SEC, NULL, InpNewsCurrency)) {
+      PrintFormat("⚠️ โหลดปฏิทินข่าวย้อนหลังไม่สำเร็จ (error %d)", GetLastError());
+      return;
+   }
+   for(int i = 0; i < ArraySize(vals); i++) {
+      MqlCalendarEvent ev;
+      if(!CalendarEventById(vals[i].event_id, ev)) continue;
+      bool high = (ev.importance == CALENDAR_IMPORTANCE_HIGH);
+      bool med  = (ev.importance == CALENDAR_IMPORTANCE_MODERATE);
+      if(!high && !(InpNewsIncludeMedium && med)) continue;
+      string detail = StringFormat("📰 %s %s [%s] %s", TimeToString(vals[i].time, TIME_DATE|TIME_MINUTES),
+                                   InpNewsCurrency, (high ? "High" : "Medium"), ev.name);
+      DrawNewsEvent(vals[i].time, ev.name, detail);
+   }
+
+   // ลบข่าวที่เก่ากว่าช่วงที่แสดง
+   int n = ArraySize(g_newsviz_names), w = 0;
+   for(int i = 0; i + 1 < n; i += 2) {
+      datetime tt = (datetime)ObjectGetInteger(0, g_newsviz_names[i], OBJPROP_TIME);
+      if(tt != 0 && tt < from) {
+         ObjectDelete(0, g_newsviz_names[i]);
+         ObjectDelete(0, g_newsviz_names[i + 1]);
+         continue;
+      }
+      g_newsviz_names[w++] = g_newsviz_names[i];
+      g_newsviz_names[w++] = g_newsviz_names[i + 1];
+   }
+   if(w != n) ArrayResize(g_newsviz_names, w);
+}
+
+//====================================================================
 // 🎨 DISPLAY
 //====================================================================
 void MoveHLine(string name, double price, color clr, ENUM_LINE_STYLE style, int width, string tip, double &cache) {
@@ -1822,6 +2104,10 @@ int OnInit() {
    ArrayResize(g_seg_times, 0);
    ArrayResize(g_marks, 0);
    g_marks_bar = 0;
+   g_sim_bar = 0;
+   g_newsviz_loaded = 0;
+   ArrayResize(g_sim_names, 0);
+   ArrayResize(g_newsviz_names, 0);
    ArrayResize(g_news_times, 0);
    ArrayResize(g_news_names, 0);
    g_last_comment   = "";
@@ -1883,6 +2169,8 @@ void OnTimer() {
       UpdateLinesLive();
       UpdateBarZLabels();
       UpdateEntryMarks();
+      UpdateSimEntries();
+      LoadNewsHistory();
       if(bid > 0.0) UpdateLiveZLabel(bid);
       UpdateDashboard(ts, now);
       ChartRedraw(0);   // ให้วัตถุแสดงผลแม้ช่วงที่ไม่มี Tick เข้า
