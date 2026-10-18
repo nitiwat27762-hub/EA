@@ -350,7 +350,7 @@ datetime   g_next_try       = 0;
 string     g_last_status    = "เริ่มทำงาน";
 string     g_idle_note      = "";     // เหตุผลที่ยังไม่วาง Limit C1
 ulong      g_activated[];             // ไม้ที่ระบบไล่จี้เริ่มทำงานแล้ว
-BarLevels  g_lv;                      // ระดับ Limit C1 ของแท่งปัจจุบัน
+BarLevels  g_c1lv;                     // ระดับ Limit C1 ของแท่งปัจจุบัน
 RoundState g_rd;
 ulong      g_rd_pos         = 0;      // ไม้ของรอบที่ถืออยู่
 ulong      g_lim_s          = 0;      // Sell Limit C1
@@ -639,7 +639,7 @@ bool RefreshClosedBars() {
    g_last_close    = g_zc.last_close;
    g_prev_close_zr = g_zc.prev_zr;
    g_prev_close_zs = g_zc.prev_zs;
-   ComputeLevels(g_zc, g_lv);   // ระดับ Limit C1 ของแท่งใหม่ (คงที่ทั้งแท่ง)
+   ComputeLevels(g_zc, g_c1lv);   // ระดับ Limit C1 ของแท่งใหม่ (คงที่ทั้งแท่ง)
 
    // ช่วงแกว่งของแท่งปัจจุบัน
    g_bar0_hi = iHigh(_Symbol, InpZ_Timeframe, 0);
@@ -1194,8 +1194,8 @@ void LiveIdleStep(long msc, int ts, double bid, double ask) {
    }
 
    g_idle_note = "";
-   EnsureLimit(-1, g_lim_s, g_lv.sell_ok, g_lv.sell_px, bid, ask);
-   EnsureLimit( 1, g_lim_b, g_lv.buy_ok,  g_lv.buy_px,  bid, ask);
+   EnsureLimit(-1, g_lim_s, g_c1lv.sell_ok, g_c1lv.sell_px, bid, ask);
+   EnsureLimit( 1, g_lim_b, g_c1lv.buy_ok,  g_c1lv.buy_px,  bid, ask);
 }
 
 // เรียกทุก Tick และทุก 1 วินาที
@@ -2469,7 +2469,7 @@ void UpdateLevelLines() {
       }
       if(w != m) { ArrayResize(g_lvl_names, w); ArrayResize(g_lvl_times, w); }
    }
-   DrawLevelBar(t0, g_lv);
+   DrawLevelBar(t0, g_c1lv);
    g_lvl_bar = t0;
 }
 
@@ -2597,8 +2597,8 @@ void UpdateZLines() {
 
 string LevelText(int dir, double bid, double ask) {
    if(!g_z_ready) return "รอข้อมูลแท่งเทียน...";
-   bool   ok = (dir == -1) ? g_lv.sell_ok : g_lv.buy_ok;
-   double px = (dir == -1) ? g_lv.sell_px : g_lv.buy_px;
+   bool   ok = (dir == -1) ? g_c1lv.sell_ok : g_c1lv.buy_ok;
+   double px = (dir == -1) ? g_c1lv.sell_px : g_c1lv.buy_px;
    ulong  tk = (dir == -1) ? g_lim_s : g_lim_b;
    if(!ok) return "— Z ไปไม่ถึงเกณฑ์ในแท่งนี้ (ไม่วาง Limit)";
    double dist = PriceToPts((dir == -1) ? (px - bid) : (ask - px));
@@ -2769,8 +2769,8 @@ int OnInit() {
 
    g_last_tick_msc = 0;
    g_zc.ok         = false;
-   g_lv.sell_ok    = false;
-   g_lv.buy_ok     = false;
+   g_c1lv.sell_ok   = false;
+   g_c1lv.buy_ok    = false;
    ReplayReset();
    g_zbar_time      = 0;
    g_z_ready        = false;
