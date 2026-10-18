@@ -10,6 +10,7 @@
 //    ครบเวลา: ไม่เคยหลุด → สวนกลับ (CNT) / เคยหลุด → ตามน้ำ (TRD) — Lot / TP / SL / ไล่จี้ / ตัด 60 วิ ชุดเดียวกัน
 //  • เปิดได้ครั้งละ 1 ไม้ (มีไม้ถืออยู่ = ไม่เฝ้า, ไม่เก็บสัญญาณเข้าคิว) / ขึ้นแท่งใหม่ล้างการเฝ้า
 //  • Cool down: ชน SL (ขาดทุน) ติดต่อกัน 3 ไม้ → หยุด 60 นาที; ไม้ที่ปิดแบบอื่นนับใหม่ — คืนค่าจากประวัติเมื่อรีสตาร์ท
+//  • (v10.10) SL ทุกไม้ = High (SELL) / Low (BUY) สูงสุดของแท่ง (TF ของ Z) ณ ตอนเปิดไม้ ± 1,000 จุด (เดิม SL คงที่ 2,500)
 //  • เส้นระดับราคาที่ Z ถึงเกณฑ์รายแท่ง (แสดงอย่างเดียว) + Tick Replay จำลองทั้งหมด
 //
 // 🆕 v9.00: C1 = Limit ที่ระดับ Z (คำนวณล่วงหน้า) + ระบบเงา C1-C4 + โหมดตามน้ำปกติ
@@ -131,7 +132,7 @@
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "10.00"
+#property version     "10.10"
 #property description "สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว สำหรับ XAUUSD (บัญชี Hedging)"
 
 #include <Trade\Trade.mqh>
@@ -159,7 +160,7 @@ input double          InpSigmaFloorMult    = 0.50;       // ตัวหาร Z
 input group "=== 2. ออเดอร์ ==="
 input double          InpLot               = 0.01;       // Lot ต่อไม้
 input double          InpTP_Pts            = 30000.0;    // Take Profit (จุด)
-input double          InpSL_Pts            = 2500.0;     // Stop Loss (จุด)
+input double          InpSLBeyond_Pts      = 1000.0;     // SL = High (SELL) / Low (BUY) ของแท่ง (TF ของ Z) ณ ตอนเปิดไม้ ± ระยะนี้ (จุด)
 input double          InpSlippage_Pts      = 300.0;      // Slippage สูงสุดตอนส่งคำสั่ง (จุด)
 input long            InpMagic             = 880100;     // Magic Number
 input string          InpOrderComment      = "7L-CNT";   // คอมเมนต์ออเดอร์
@@ -782,6 +783,12 @@ bool InBarStartDelay(datetime t) {
    return ((long)t % per) < (long)InpBarStartDelay_Sec;
 }
 
+// SL ทุกไม้: เลย High (SELL) / Low (BUY) สูงสุดของแท่ง (TF ของ Z) ณ ตอนเปิดไม้ ออกไปอีก InpSLBeyond_Pts
+double SLPrice(int dir, double bar_hi, double bar_lo) {
+   double d = PtsToPrice(InpSLBeyond_Pts);
+   return (dir == -1) ? bar_hi + d : bar_lo - d;
+}
+
 // ตัวกรองตอนยิง (ใช้ร่วมกัน) — เวลาตลาด + เพดานสเปรด
 string EntryBlockReason(int ts, double bid, double ask) {
    if(ts != TS_OPEN) return "เวลาตลาด";
@@ -941,7 +948,13 @@ string TimeStateText(int ts, datetime now) {
 bool OpenMarket(int dir, int stage, double bid, double ask, ulong &ticket) {
    double lot   = NormalizeLot(InpLot);
    double price = (dir == -1) ? bid : ask;
-   double sl    = ND(dir == -1 ? price + PtsToPrice(InpSL_Pts) : price - PtsToPrice(InpSL_Pts));
+   double hi    = MathMax(g_bar0_hi, bid);
+   double lo    = (g_bar0_lo > 0.0) ? MathMin(g_bar0_lo, bid) : bid;
+   double stops = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
+   double sl    = SLPrice(dir, hi, lo);
+   if(dir == -1) sl = MathMax(sl, ask + stops + _Point);   // เคารพ Stops Level ของโบรก
+   else          sl = MathMin(sl, bid - stops - _Point);
+   sl = ND(sl);
    double tp    = ND(dir == -1 ? price - PtsToPrice(InpTP_Pts) : price + PtsToPrice(InpTP_Pts));
    string cmt   = StringFormat("%s %s R%+.1f S%+.1f", InpOrderComment, StageTag(stage), g_z_reg, g_z_sma);
    bool   ok    = (dir == -1) ? trade.Sell(lot, _Symbol, bid, sl, tp, cmt)
@@ -949,8 +962,10 @@ bool OpenMarket(int dir, int stage, double bid, double ask, ulong &ticket) {
    uint rc = trade.ResultRetcode();
    if(ok && (rc == TRADE_RETCODE_DONE || rc == TRADE_RETCODE_PLACED || rc == TRADE_RETCODE_DONE_PARTIAL)) {
       ticket = trade.ResultOrder();
-      PrintFormat("✅ เปิด %s %s %.2f lot @ %s | Z_reg %+.2f / Z_SMA %+.2f", StageTag(stage), (dir == -1 ? "SELL" : "BUY"),
-                  lot, DoubleToString(trade.ResultPrice(), _Digits), g_z_reg, g_z_sma);
+      PrintFormat("✅ เปิด %s %s %.2f lot @ %s | SL %s (%s แท่ง %s ± %.0f จุด, ห่าง %.0f จุด) | Z_reg %+.2f / Z_SMA %+.2f",
+                  StageTag(stage), (dir == -1 ? "SELL" : "BUY"), lot, DoubleToString(trade.ResultPrice(), _Digits),
+                  DoubleToString(sl, _Digits), (dir == -1 ? "High" : "Low"), DoubleToString(dir == -1 ? hi : lo, _Digits),
+                  InpSLBeyond_Pts, PriceToPts(MathAbs(sl - price)), g_z_reg, g_z_sma);
       return true;
    }
    PrintFormat("❌ เปิด %s %s ไม่สำเร็จ: %u %s", StageTag(stage), (dir == -1 ? "SELL" : "BUY"), rc, trade.ResultRetcodeDescription());
@@ -1694,6 +1709,8 @@ int        g_rp_b         = -1;
 datetime   g_rp_bar_t     = 0;
 ZCache     g_rp_zc;
 bool       g_rp_bar_chg   = false;
+double     g_rp_hi        = 0.0;     // High / Low ของแท่งปัจจุบัน (จาก tick ที่เล่นมาแล้ว) สำหรับวาง SL
+double     g_rp_lo        = 0.0;
 WatchState g_rp_ws;
 WatchState g_rp_wb;
 double     g_rp_bid = 0.0, g_rp_ask = 0.0, g_rp_zr = 0.0, g_rp_zs = 0.0;
@@ -1714,7 +1731,7 @@ void ReplayReset() {
    ArrayResize(g_rr, 0);
    g_rt_open = -1; g_rb_drawn = 0; g_rc_drawn = 0;
    CoolReset(g_rp_cool);
-   g_rp_b = -1; g_rp_bar_t = 0; g_rp_zc.ok = false; g_rp_bar_chg = false;
+   g_rp_b = -1; g_rp_bar_t = 0; g_rp_zc.ok = false; g_rp_bar_chg = false; g_rp_hi = 0.0; g_rp_lo = 0.0;
    WatchReset(g_rp_ws); WatchReset(g_rp_wb);
    g_rp_bid = 0.0; g_rp_ask = 0.0; g_rp_zr = 0.0; g_rp_zs = 0.0;
    g_rp_msc = 0; g_rp_have = false; g_rp_init = false; g_rp_caught = false;
@@ -1736,6 +1753,8 @@ void ReplayEnterBar(int b) {
    bool had   = (g_rp_bar_t != 0);
    g_rp_bar_t = g_rr[b].time;
    g_rp_zc.ok = false;
+   g_rp_hi    = 0.0;
+   g_rp_lo    = 0.0;
    int n = InpZ_Period;
    if(b >= n) {
       double c[];
@@ -1770,14 +1789,15 @@ bool ReplayBarFor(datetime t) {
 int ReplayOpen(int dir, int stage, long msc, double price) {
    int i = ArraySize(g_rt);
    ArrayResize(g_rt, i + 1);
-   double sl_d = PtsToPrice(InpSL_Pts);
+   double hi   = (g_rp_hi > 0.0) ? MathMax(g_rp_hi, price) : price;
+   double lo   = (g_rp_lo > 0.0) ? MathMin(g_rp_lo, price) : price;
    double tp_d = PtsToPrice(InpTP_Pts);
    g_rt[i].msc_in   = msc;
    g_rt[i].dir      = dir;
    g_rt[i].stage    = stage;
    g_rt[i].lot      = NormalizeLot(InpLot);
    g_rt[i].p_in     = price;
-   g_rt[i].sl       = (dir == -1) ? price + sl_d : price - sl_d;
+   g_rt[i].sl       = SLPrice(dir, hi, lo);
    g_rt[i].tp       = (dir == -1) ? price - tp_d : price + tp_d;
    g_rt[i].zr       = g_rp_zr;
    g_rt[i].zs       = g_rp_zs;
@@ -1890,6 +1910,8 @@ void ReplayTick(const MqlTick &tk) {
 
    ReplayTimeEvents(msc);                 // A) เหตุการณ์ตามเวลาด้วยราคาเดิม (ตัด 60 วิ / ยิงหลังครบเวลาเฝ้า)
    if(!ReplayBarFor(t)) return;           // B) แท่งของ tick นี้
+   if(g_rp_hi <= 0.0 || bid > g_rp_hi) g_rp_hi = bid;
+   if(g_rp_lo <= 0.0 || bid < g_rp_lo) g_rp_lo = bid;
 
    double zr = 0.0, zs = 0.0, fit, sig, mn, ssd;
    bool   fl;
@@ -2452,8 +2474,8 @@ void UpdateDashboard(int ts, datetime now) {
    string news_str = NextNewsText(now);
 
    long   now_msc = MathMax(g_last_tick_msc, (long)now * 1000);
-   string msg = StringFormat("=== 📊 7-Lines Counter EA v10.00 (เข้าไม้: %s | No new high/low %d วิ | Z หลุดเกณฑ์ −%.2f → ตามน้ำ | ครั้งละ 1 ไม้) ===\n",
-                             LogicName(), InpNoNewExt_Sec, InpTrendFlipBuffer);
+   string msg = StringFormat("=== 📊 7-Lines Counter EA v10.10 (เข้าไม้: %s | No new high/low %d วิ | Z หลุดเกณฑ์ −%.2f → ตามน้ำ | SL = High/Low แท่ง ± %.0f) ===\n",
+                             LogicName(), InpNoNewExt_Sec, InpTrendFlipBuffer, InpSLBeyond_Pts);
    msg += StringFormat("Z (%s, %d) : %s\n", EnumToString(InpZ_Timeframe), InpZ_Period, z_str);
    msg += StringFormat("Z แท่งที่เพิ่งปิด : R %+.2f / S %+.2f%s\n", g_prev_close_zr, g_prev_close_zs, (news_str == "" ? "" : " | " + news_str));
    msg += StringFormat("SELL (≥ +%.2f) : %s\n", InpSellZ, WatchText(g_wsell, true,  now_msc));
@@ -2487,7 +2509,7 @@ int OnInit() {
       return(INIT_PARAMETERS_INCORRECT);
    }
    if(InpLot <= 0.0) { Print("❌ Lot ไม่ถูกต้อง"); return(INIT_PARAMETERS_INCORRECT); }
-   if(InpTP_Pts <= 0.0 || InpSL_Pts <= 0.0 || InpTrailDist_Pts <= 0.0 || InpTrailInterval_Sec < 1) {
+   if(InpTP_Pts <= 0.0 || InpSLBeyond_Pts < 0.0 || InpTrailDist_Pts <= 0.0 || InpTrailInterval_Sec < 1) {
       Print("❌ TP / SL / ระยะโล่ / รอบไล่จี้ ไม่ถูกต้อง");
       return(INIT_PARAMETERS_INCORRECT);
    }

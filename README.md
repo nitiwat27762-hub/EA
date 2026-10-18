@@ -16,7 +16,11 @@ indicator EA XAUUSD
 
 | ไฟล์ | เวอร์ชัน | รายละเอียด |
 |---|---|---|
-| `Experts/Seven_Lines_Counter_EA.mq5` | 10.00 | EA สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว (XAUUSD, บัญชี Hedging) |
+| `Experts/Seven_Lines_Counter_EA.mq5` | 10.10 | EA สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว (XAUUSD, บัญชี Hedging) |
+
+### Counter EA v10.10
+- SL ทุกไม้ (สวนกลับ / ตามน้ำ) = High (SELL) / Low (BUY) สูงสุดของแท่ง M15 ณ ตอนเปิดไม้ ± 1,000 จุด (`InpSLBeyond_Pts`) แทน SL คงที่ 2,500
+- Tick Replay วาง SL แบบเดียวกันจาก High / Low ของแท่งที่เล่นมาถึง ณ ตอนยิง
 
 ### Counter EA v10.00
 - ยกเลิก Limit C1 / ระบบเงา C1-C4 / ตามน้ำปกติ / เทรดตามข่าว — ช่วงข่าวแสดงบนกราฟอย่างเดียว ระบบเทรดตามปกติตอนข่าวออก
