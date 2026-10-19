@@ -28,7 +28,7 @@
 //
 // 🧪 Tick Replay (บนกราฟ, ไม่ใช่ Strategy Tester)
 //  • เล่นซ้ำ tick จริงย้อนหลังด้วยกติกาเดียวกับ EA + บันทึกปัจจัยของทุกไม้ลง MQL5/Files/7LCEA_Replay_<symbol>.csv
-//  • ทดสอบ Stop ตามน้ำที่ SL ของไม้สวน + 500 (ไม้สมมติ) → คอลัมน์ hedge_* ในไฟล์เดียวกัน
+//  • ทดสอบ Stop ตามน้ำที่ SL + 500 ของทุกสัญญาณ T1-T3 (ไม่ต้องผ่านระยะถอย, ไม้สมมติ) → MQL5/Files/7LCEA_Hedge_<symbol>.csv
 //  • โหมดสังเกต "ให้ตลาดตอบเอง" (ไม้สมมติ, ปิดเป็นค่าเริ่มต้น) → MQL5/Files/7LCEA_Observe_<symbol>.csv
 //
 // ⚡ การประหยัด CPU
@@ -37,7 +37,7 @@
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "11.30"
+#property version     "11.31"
 #property description "สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว สำหรับ XAUUSD (บัญชี Hedging)"
 
 #include <Trade\Trade.mqh>
@@ -124,10 +124,10 @@ input int             InpObsWindow_Min     = 10;         // โหมดสั�
 input double          InpObsTrend1_Pts     = 2000.0;     // โหมดสังเกต: ทะลุเกินพิกัด ≥ ระยะนี้ = เทรนด์ (ชุดที่ 1)
 input double          InpObsTrend2_Pts     = 4000.0;     // โหมดสังเกต: ระยะเทรนด์ชุดที่ 2
 input double          InpObsTrend3_Pts     = 6000.0;     // โหมดสังเกต: ระยะเทรนด์ชุดที่ 3
-input bool            InpHedgeTest         = true;       // 🧪 Tick Replay: ทดสอบ Stop ตามน้ำที่ SL ของไม้สวน + ระยะ (ไม้สมมติ ไม่เทรดจริง)
+input bool            InpHedgeTest         = true;       // 🧪 Tick Replay: ทดสอบ Stop ตามน้ำที่ SL ของทุกสัญญาณ T1-T3 + ระยะ (ไม้สมมติ ไม่เทรดจริง)
 input double          InpHedgeOffset_Pts   = 500.0;      // ทดสอบตามน้ำ: วาง Stop เลย SL ของไม้สวนไปกี่จุด
 input double          InpHedgeSL_Pts       = 1500.0;     // ทดสอบตามน้ำ: SL ของไม้ตามน้ำห่างจากราคาเข้า (จุด)
-input int             InpHedgeLife_Min     = 30;         // ทดสอบตามน้ำ: ไม้สวนชน SL แล้ว Stop ยังรออยู่ได้อีกกี่นาที
+input int             InpHedgeLife_Min     = 30;         // ทดสอบตามน้ำ: Stop มีอายุกี่นาทีหลังสัญญาณ / หลังราคาแตะระดับ SL ของไม้สวน
 input double          InpObsCloseNear_Pts  = 1000.0;     // โหมดสังเกต (สรุปบน Dashboard): แท่งสัญญาณปิดห่าง P ไม่เกินเท่านี้ (หรือเลย P) = เทรนด์
 input bool            InpShowNewsHistory   = true;       // แสดงช่วงข่าวบนกราฟ (แสดงอย่างเดียว ไม่มีผลกับการเทรด, ใช้ไม่ได้ใน Tester)
 input string          InpNewsCurrency      = "USD";      // สกุลเงินของข่าวที่แสดง
@@ -1604,10 +1604,7 @@ struct RTrade {
    double   mfe, mae;      // กำไรสูงสุด / ติดลบสูงสุดระหว่างถือ (ราคา)
    double   sl0;           // SL ตอนเปิดไม้ (ก่อนขยับโล่)
    double   pull;          // ระยะถอยจากยอดไส้ตอนเปิดไม้ (จุด)
-   int      hg_state;      // ทดสอบ Stop ตามน้ำ: HG_*
-   double   hg_price;      // ราคา Stop
-   long     hg_exp;        // หมดอายุ (msc)
-   int      hg_vt;         // ไม้ตามน้ำ (index ใน g_vt)
+   int      hg;            // ทดสอบ Stop ตามน้ำ (index ใน g_hg, -1 = ไม่มี)
    bool     activated;
    long     last_trail_sec;
    datetime force_close;
@@ -1633,11 +1630,26 @@ struct RCool {
    datetime until;
 };
 
-#define HG_NONE     0
 #define HG_PENDING  1
 #define HG_FILLED   2
-#define HG_CANCEL   3   // ไม้สวนปิดแบบไม่ใช่ SL → ยกเลิก
+#define HG_CANCEL   3   // ไม้สวนจริงปิดแบบไม่ใช่ SL → ยกเลิก
 #define HG_EXPIRED  4
+
+// ทดสอบ Stop ตามน้ำ: 1 รายการต่อสัญญาณที่ครบเวลาเฝ้า (ทั้งที่ยิงจริงและที่ถูกทิ้งเพราะถอยไม่ถึง)
+struct RHedge {
+   long   msc;      // เวลาสัญญาณ
+   int    dir;      // ทิศสวนของสัญญาณ (-1 SELL / 1 BUY) → ไม้ตามน้ำ = −dir
+   int    tier;
+   bool   fired;    // ยิงไม้สวนจริง / false = ถูกทิ้งเพราะถอยไม่ถึง
+   int    rt;       // ไม้สวนจริง (index ใน g_rt, -1 = ไม่มี)
+   double pull;     // ระยะถอยจากยอดไส้ตอนสัญญาณ (จุด)
+   double sl_lvl;   // ระดับ SL ของไม้สวน (ยอดไส้ ± InpSLBeyond_Pts)
+   double stop;     // ราคา Stop ตามน้ำ (เลย SL ไป InpHedgeOffset_Pts)
+   bool   touched;  // ราคาแตะระดับ SL แล้ว
+   long   exp;      // หมดอายุ (msc)
+   int    state;    // HG_*
+   int    vt;       // ไม้ตามน้ำ (index ใน g_vt)
+};
 
 RTrade     g_rt[];
 RBlocked   g_rb[];
@@ -1666,7 +1678,9 @@ WatchState g_rp_ws;
 WatchState g_rp_wb;
 PullBlock  g_rp_pbs;                // ทิ้งสัญญาณเพราะถอยไม่ถึง → รอขาใหม่ (Replay)
 PullBlock  g_rp_pbb;
-int        g_hg_live[];             // ไม้หลักที่มี Stop ตามน้ำรออยู่
+RHedge     g_hg[];
+int        g_hg_live[];             // Stop ตามน้ำที่ยังรออยู่ (index ใน g_hg)
+int        g_hg_csv_rows  = -1;
 double     g_rp_bid = 0.0, g_rp_ask = 0.0, g_rp_zr = 0.0, g_rp_zs = 0.0;
 long       g_rp_msc       = 0;
 bool       g_rp_have      = false;
@@ -1688,7 +1702,9 @@ void ReplayReset() {
    g_rp_b = -1; g_rp_bar_t = 0; g_rp_zc.ok = false; g_rp_bar_chg = false; g_rp_hi = 0.0; g_rp_lo = 0.0;
    WatchReset(g_rp_ws); WatchReset(g_rp_wb);
    g_rp_pbs.on = false; g_rp_pbb.on = false;
+   ArrayResize(g_hg, 0);
    ArrayResize(g_hg_live, 0);
+   g_hg_csv_rows = -1;
    g_rp_bid = 0.0; g_rp_ask = 0.0; g_rp_zr = 0.0; g_rp_zs = 0.0;
    g_rp_msc = 0; g_rp_have = false; g_rp_init = false; g_rp_caught = false;
    g_rp_cursor = 0; g_rp_retry = 0; g_rp_ticks = 0;
@@ -1803,14 +1819,7 @@ int ReplayOpen(int dir, int stage, long msc, double price) {
    g_rt[i].mfe = 0.0; g_rt[i].mae = 0.0;
    g_rt[i].sl0      = g_rt[i].sl;
    g_rt[i].pull     = PullPts(dir, g_rp_hi, g_rp_lo, g_rp_bid, g_rp_ask);
-   g_rt[i].hg_state = HG_NONE; g_rt[i].hg_price = 0.0; g_rt[i].hg_exp = LONG_MAX; g_rt[i].hg_vt = -1;
-   if(InpHedgeTest) {   // Stop ตามน้ำเลย SL ของไม้สวนไป InpHedgeOffset_Pts
-      g_rt[i].hg_state = HG_PENDING;
-      g_rt[i].hg_price = g_rt[i].sl - dir * PtsToPrice(InpHedgeOffset_Pts);
-      int n = ArraySize(g_hg_live);
-      ArrayResize(g_hg_live, n + 1);
-      g_hg_live[n] = i;
-   }
+   g_rt[i].hg       = -1;
    g_rt[i].activated      = false;
    g_rt[i].last_trail_sec = 0;
    g_rt[i].force_close    = ForceCloseTimeAt((datetime)(msc / 1000));
@@ -1838,10 +1847,8 @@ void ReplayClose(long msc_out, double price, int reason) {
    g_rt[i].usd     = diff * g_rt[i].lot * g_contract;
    g_rt_open = -1;
    g_rp_closed++;
-   if(g_rt[i].hg_state == HG_PENDING) {   // ไม้สวนชน SL → Stop รอต่อ InpHedgeLife_Min นาที, ปิดแบบอื่น → ยกเลิก
-      if(reason == RX_SL) g_rt[i].hg_exp = msc_out + (long)InpHedgeLife_Min * 60000;
-      else                HedgeDone(i, HG_CANCEL);
-   }
+   int h = g_rt[i].hg;   // ไม้สวนจริงปิดแบบไม่ใช่ SL → ยกเลิก Stop ตามน้ำ
+   if(h >= 0 && g_hg[h].state == HG_PENDING && reason != RX_SL) HedgeDone(h, HG_CANCEL);
    if(CoolOnClose(g_rp_cool, reason == RX_SL && diff < 0.0, (datetime)(msc_out / 1000))) {
       int k = ArraySize(g_rc);
       ArrayResize(g_rc, k + 1);
@@ -1901,6 +1908,7 @@ void ReplayFire(int dir, long fire_msc) {
    g_rt[i].ext_r = w.ext_r;
    g_rt[i].ext_s = w.ext_s;
    ReplayFillFeatures(i, w, dir, fire_msc);
+   if(InpHedgeTest) g_rt[i].hg = HedgeAdd(dir, tier, true, i, fire_msc);
 }
 
 // เหตุการณ์ตามเวลาระหว่าง tick ก่อนหน้า → tick นี้ (ราคายังเป็นของ tick ก่อนหน้า)
@@ -1923,6 +1931,7 @@ void ReplayTimeEvents(long msc) {
 void ReplayPullGate(int dir, long fire_msc) {
    if(PullOK(dir, g_rp_hi, g_rp_lo, g_rp_bid, g_rp_ask)) { ReplayFire(dir, fire_msc); return; }
    if(InpPullMode != PULL_AT_TIMER) return;
+   if(InpHedgeTest) HedgeAdd(dir, (dir == -1) ? g_rp_ws.tier : g_rp_wb.tier, false, -1, fire_msc);
    int k = ArraySize(g_rb);
    ArrayResize(g_rb, k + 1);
    g_rb[k].msc = fire_msc; g_rb[k].dir = dir;
@@ -1932,26 +1941,103 @@ void ReplayPullGate(int dir, long fire_msc) {
    else          { PullBlockSet(g_rp_pbb,  1, g_rp_hi, g_rp_lo, g_rp_bid); WatchReset(g_rp_wb); }
 }
 
-// ทดสอบ Stop ตามน้ำ: จบสถานะ (เอาออกจากรายการรอ)
-void HedgeDone(int i, int state) {
-   g_rt[i].hg_state = state;
+// ทดสอบ Stop ตามน้ำ: วาง Stop เลยระดับ SL ของไม้สวนไป InpHedgeOffset_Pts (ราคา/แท่งของ tick ก่อนหน้า = ตอนสัญญาณ)
+// อายุ: InpHedgeLife_Min นาทีหลังสัญญาณ — ราคาแตะระดับ SL แล้วนับใหม่อีก InpHedgeLife_Min นาที
+int HedgeAdd(int dir, int tier, bool fired, int rt, long msc) {
+   double hi = (g_rp_hi > 0.0) ? MathMax(g_rp_hi, g_rp_bid) : g_rp_bid;
+   double lo = (g_rp_lo > 0.0) ? MathMin(g_rp_lo, g_rp_bid) : g_rp_bid;
+   int h = ArraySize(g_hg);
+   ArrayResize(g_hg, h + 1);
+   g_hg[h].msc     = msc;
+   g_hg[h].dir     = dir;
+   g_hg[h].tier    = tier;
+   g_hg[h].fired   = fired;
+   g_hg[h].rt      = rt;
+   g_hg[h].pull    = PullPts(dir, g_rp_hi, g_rp_lo, g_rp_bid, g_rp_ask);
+   g_hg[h].sl_lvl  = (rt >= 0) ? g_rt[rt].sl0 : SLPrice(dir, hi, lo);
+   g_hg[h].stop    = g_hg[h].sl_lvl - dir * PtsToPrice(InpHedgeOffset_Pts);
+   g_hg[h].touched = false;
+   g_hg[h].exp     = msc + (long)InpHedgeLife_Min * 60000;
+   g_hg[h].state   = HG_PENDING;
+   g_hg[h].vt      = -1;
+   int n = ArraySize(g_hg_live);
+   ArrayResize(g_hg_live, n + 1);
+   g_hg_live[n] = h;
+   return h;
+}
+
+// จบสถานะ (เอาออกจากรายการรอ)
+void HedgeDone(int h, int state) {
+   g_hg[h].state = state;
    int n = ArraySize(g_hg_live), w = 0;
-   for(int j = 0; j < n; j++) if(g_hg_live[j] != i) g_hg_live[w++] = g_hg_live[j];
+   for(int j = 0; j < n; j++) if(g_hg_live[j] != h) g_hg_live[w++] = g_hg_live[j];
    ArrayResize(g_hg_live, w);
 }
 
-// ทุก tick: Stop ตามน้ำถูกชน → เปิดไม้สมมติ (SL = ราคาเข้า ∓ InpHedgeSL_Pts) / หมดอายุ
+// ทุก tick: แตะระดับ SL → ต่ออายุ, ชน Stop → เปิดไม้ตามน้ำสมมติ (SL = ราคาเข้า ∓ InpHedgeSL_Pts), หมดอายุ → ยกเลิก
 void HedgeTick(long msc, double bid, double ask) {
    for(int j = ArraySize(g_hg_live) - 1; j >= 0; j--) {
       if(j >= ArraySize(g_hg_live)) continue;
-      int i = g_hg_live[j];
-      if(msc >= g_rt[i].hg_exp) { HedgeDone(i, HG_EXPIRED); continue; }
-      int d = g_rt[i].dir;   // ทิศไม้สวน → ไม้ตามน้ำ = −d
-      if(d == -1 ? (ask < g_rt[i].hg_price) : (bid > g_rt[i].hg_price)) continue;
-      double px = (d == -1) ? ask : bid;
-      g_rt[i].hg_vt = VTOpen(-d, NormalizeLot(InpLot), px + d * PtsToPrice(InpHedgeSL_Pts), msc, bid, ask);
-      HedgeDone(i, HG_FILLED);
+      int h = g_hg_live[j];
+      int d = g_hg[h].dir;
+      if(!g_hg[h].touched && (d == -1 ? (ask >= g_hg[h].sl_lvl) : (bid <= g_hg[h].sl_lvl))) {
+         g_hg[h].touched = true;
+         g_hg[h].exp     = msc + (long)InpHedgeLife_Min * 60000;
+      }
+      if(d == -1 ? (ask >= g_hg[h].stop) : (bid <= g_hg[h].stop)) {
+         double px = (d == -1) ? ask : bid;
+         g_hg[h].vt = VTOpen(-d, NormalizeLot(InpLot), px + d * PtsToPrice(InpHedgeSL_Pts), msc, bid, ask);
+         HedgeDone(h, HG_FILLED);
+      }
+      else if(msc >= g_hg[h].exp) HedgeDone(h, HG_EXPIRED);
    }
+}
+
+bool HedgeFinished(int h) {
+   if(h < 0) return true;
+   if(g_hg[h].state == HG_PENDING) return false;
+   return (g_hg[h].vt < 0 || !g_vt[g_hg[h].vt].open);
+}
+
+string HedgeCode(int h) {
+   switch(g_hg[h].state) {
+      case HG_PENDING: return "PENDING";
+      case HG_CANCEL:  return "CANCELLED";
+      case HG_EXPIRED: return "EXPIRED";
+      case HG_FILLED:
+         if(g_hg[h].vt >= 0 && !g_vt[g_hg[h].vt].used) return (g_vt[g_hg[h].vt].flag == 2 ? "INVALID_SL" : "BLOCKED");
+         return "FILLED";
+   }
+   return "NONE";
+}
+
+string HedgeCSVName() { return "7LCEA_Hedge_" + _Symbol + ".csv"; }
+
+// เขียน Stop ตามน้ำที่จบแล้วทั้งหมดลง MQL5/Files (เขียนใหม่ทั้งไฟล์เมื่อมีเพิ่ม)
+void HedgeWriteCSV(int rows) {
+   string fn = HedgeCSVName();
+   int fh = FileOpen(fn, FILE_WRITE | FILE_TXT | FILE_ANSI);
+   if(fh == INVALID_HANDLE) { PrintFormat("⚠️ เขียนไฟล์ %s ไม่สำเร็จ (error %d)", fn, GetLastError()); return; }
+   FileWriteString(fh, "sig_time,counter_side,tier,source,pull_pts,sl_level,stop_price,touched_sl,status," +
+                       "main_time,main_exit,main_pnl_pts,main_usd," + VTCsvHead("hedge") + "\r\n");
+   for(int h = 0; h < ArraySize(g_hg); h++) {
+      if(!HedgeFinished(h)) continue;
+      string ln = StringFormat("%s,%s,%d,%s,%.0f,%s,%s,%d,%s,",
+                               TimeToString((datetime)(g_hg[h].msc / 1000), TIME_DATE|TIME_SECONDS),
+                               (g_hg[h].dir == -1 ? "SELL" : "BUY"), g_hg[h].tier, (g_hg[h].fired ? "FIRED" : "DISCARDED"),
+                               g_hg[h].pull, DoubleToString(g_hg[h].sl_lvl, _Digits), DoubleToString(g_hg[h].stop, _Digits),
+                               (g_hg[h].touched ? 1 : 0), HedgeCode(h));
+      int r = g_hg[h].rt;
+      if(r >= 0 && g_rt[r].reason != RX_OPEN)
+         ln += StringFormat("%s,%s,%.0f,%.2f,", TimeToString((datetime)(g_rt[r].msc_in / 1000), TIME_DATE|TIME_SECONDS),
+                            ReplayReasonCode(g_rt[r].reason), g_rt[r].pnl, g_rt[r].usd);
+      else
+         ln += ",,,,";
+      FileWriteString(fh, ln + VTCsv(g_hg[h].vt) + "\r\n");
+   }
+   FileClose(fh);
+   if(g_hg_csv_rows < 0) PrintFormat("📄 บันทึกทดสอบ Stop ตามน้ำ %d สัญญาณ ลง MQL5\\Files\\%s (อัปเดตเมื่อมีเพิ่ม)", rows, fn);
+   g_hg_csv_rows = rows;
 }
 
 // ไม้ที่ถืออยู่: SL / TP / โล่ ด้วยราคา tick ปัจจุบัน
@@ -2512,11 +2598,12 @@ void DrawReplayTrade(int i) {
                            (g_rt[i].f_pday_ok ? StringFormat("%+.0f", g_rt[i].f_pday_brk) : "-"),
                            g_rt[i].f_hour, g_rt[i].f_min, g_rt[i].f_gmt_hour);
    tipText += StringFormat("\nห่างปลายไส้ %.0f จุด | ถอยจากยอดไส้ตอนเข้า %.0f จุด | SL ตอนเข้า %s", gap, g_rt[i].pull, DoubleToString(g_rt[i].sl0, _Digits));
-   if(g_rt[i].hg_state != HG_NONE) {
-      int k = g_rt[i].hg_vt;
-      tipText += StringFormat("\nStop ตามน้ำ @ %s: %s", DoubleToString(g_rt[i].hg_price, _Digits),
+   int h = g_rt[i].hg;
+   if(h >= 0) {
+      int k = g_hg[h].vt;
+      tipText += StringFormat("\nStop ตามน้ำ @ %s: %s", DoubleToString(g_hg[h].stop, _Digits),
                               (k >= 0 && g_vt[k].used && !g_vt[k].open) ? StringFormat("%s %+.0f จุด $%+.2f", ReplayReasonName(g_vt[k].reason), VTPts(k), VTUsd(k))
-                                                                         : HedgeCode(i));
+                                                                         : HedgeCode(h));
    }
    if(!open)
       tipText += StringFormat("\nออก %s @ %s (%s) | %+.0f จุด | $%+.2f | ถือ %d วินาที",
@@ -2529,7 +2616,7 @@ void DrawReplayTrade(int i) {
    if(tip > 0.0)  ObjectSetString(0, ng, OBJPROP_TOOLTIP, tipText);
    if(!open)      ObjectSetString(0, nl, OBJPROP_TOOLTIP, tipText);
 
-   g_rt[i].drawn_final = (!open && shift > 0 && ReplayRowDone(i));
+   g_rt[i].drawn_final = (!open && shift > 0 && HedgeFinished(g_rt[i].hg));
 }
 
 void DrawReplayBlocked(int k) {
@@ -2609,51 +2696,25 @@ string ReplayStatsText() {
                      cnt[1], usd_st[1], cnt[2], usd_st[2], cnt[3], usd_st[3], ArraySize(g_rc), tail);
    if(InpReplayCSV && g_rp_csv_rows >= 0)
       s += StringFormat("\n   📄 CSV: MQL5\\Files\\%s (%d ไม้)", ReplayCSVName(), g_rp_csv_rows);
-   if(InpHedgeTest) {
-      int    hp = 0, hf = 0;
-      double hu = 0.0;
-      for(int i = 0; i < ArraySize(g_rt); i++) {
-         if(g_rt[i].hg_state == HG_NONE) continue;
-         hp++;
-         if(g_rt[i].hg_state == HG_FILLED && g_rt[i].hg_vt >= 0 && g_vt[g_rt[i].hg_vt].used) { hf++; hu += VTUsd(g_rt[i].hg_vt); }
+   if(InpHedgeTest) {   // แยกตามที่มา: สัญญาณที่ยิงไม้สวนจริง / สัญญาณที่ถูกทิ้งเพราะถอยไม่ถึง
+      int    np[2], nf[2];
+      double nu[2];
+      ArrayInitialize(np, 0); ArrayInitialize(nf, 0); ArrayInitialize(nu, 0.0);
+      for(int h = 0; h < ArraySize(g_hg); h++) {
+         int src = g_hg[h].fired ? 0 : 1;
+         np[src]++;
+         int k = g_hg[h].vt;
+         if(k >= 0 && g_vt[k].used && !g_vt[k].open) { nf[src]++; nu[src] += VTUsd(k); }
       }
-      s += StringFormat("\n   🧪 ทดสอบ Stop ตามน้ำ (SL+%.0f, SL ตามน้ำ %.0f): วาง %d | ถูกชน %d ไม้ $%+.2f | รวมกับไม้หลัก $%+.2f (ไม้สมมติ)",
-                        InpHedgeOffset_Pts, InpHedgeSL_Pts, hp, hf, hu, usd + hu);
+      s += StringFormat("\n   🧪 Stop ตามน้ำ (SL+%.0f, SL ตามน้ำ %.0f, ไม้สมมติ): ยิงจริง วาง %d ชน %d $%+.2f | ถูกทิ้ง วาง %d ชน %d $%+.2f | รวม $%+.2f",
+                        InpHedgeOffset_Pts, InpHedgeSL_Pts, np[0], nf[0], nu[0], np[1], nf[1], nu[1], nu[0] + nu[1]);
+      if(g_hg_csv_rows >= 0) s += StringFormat("\n   📄 CSV: MQL5\\Files\\%s", HedgeCSVName());
    }
    s += ObsStatsText();
    return s;
 }
 
 string ReplayCSVName() { return "7LCEA_Replay_" + _Symbol + ".csv"; }
-
-string HedgeCode(int i) {
-   switch(g_rt[i].hg_state) {
-      case HG_PENDING: return "PENDING";
-      case HG_CANCEL:  return "CANCELLED";
-      case HG_EXPIRED: return "EXPIRED";
-      case HG_FILLED:
-         if(g_rt[i].hg_vt >= 0 && !g_vt[g_rt[i].hg_vt].used) return (g_vt[g_rt[i].hg_vt].flag == 2 ? "INVALID_SL" : "BLOCKED");
-         return "FILLED";
-   }
-   return "NONE";
-}
-
-// แถวพร้อมเขียน: ไม้หลักปิดแล้ว + Stop ตามน้ำจบสถานะ (ไม้สมมติปิดแล้ว)
-bool ReplayRowDone(int i) {
-   if(g_rt[i].reason == RX_OPEN || g_rt[i].hg_state == HG_PENDING) return false;
-   return (g_rt[i].hg_vt < 0 || !g_vt[g_rt[i].hg_vt].open);
-}
-
-string ReplayReasonCode(int r) {
-   switch(r) {
-      case RX_TP:    return "TP";
-      case RX_SL:    return "SL";
-      case RX_CUT:   return "CUT60";
-      case RX_TRAIL: return "TRAIL";
-      case RX_WEEK:  return "WEEKCLOSE";
-   }
-   return "OPEN";
-}
 
 // เขียนไม้จำลองที่ปิดแล้วทั้งหมด + ปัจจัย ลง MQL5/Files (เขียนใหม่ทั้งไฟล์เมื่อมีไม้ปิดเพิ่ม)
 void ReplayWriteCSV() {
@@ -2666,10 +2727,10 @@ void ReplayWriteCSV() {
                       "f3_slope_pts_per_bar,f3_slope_div_sigma,f5_day_break_pts,f5_prevday_break_pts," +
                       "f7_server_hour,f7_server_min,f7_gmt_hour,f7_weekday,f9_zreg_minus_zsma," +
                       "time_out,exit,hold_sec,pnl_pts,usd,mfe_pts,mae_pts," +
-                      "sl_initial,pull_at_entry_pts,hedge_status,hedge_stop_price," + VTCsvHead("hedge") + "\r\n");
+                      "sl_initial,pull_at_entry_pts\r\n");
    int rows = 0;
    for(int i = 0; i < ArraySize(g_rt); i++) {
-      if(!ReplayRowDone(i)) continue;
+      if(g_rt[i].reason == RX_OPEN) continue;
       string ln = StringFormat("%s,%s,%d,%d,%.2f,%s,%s,%s,%.0f,%.3f,%.3f,%.3f,%.3f,",
                                TimeToString((datetime)(g_rt[i].msc_in / 1000), TIME_DATE|TIME_SECONDS),
                                (g_rt[i].dir == -1 ? "SELL" : "BUY"), g_rt[i].stage, g_rt[i].max_tier, g_rt[i].lot,
@@ -2686,9 +2747,7 @@ void ReplayWriteCSV() {
                          TimeToString((datetime)(g_rt[i].msc_out / 1000), TIME_DATE|TIME_SECONDS), ReplayReasonCode(g_rt[i].reason),
                          (int)((g_rt[i].msc_out - g_rt[i].msc_in) / 1000), g_rt[i].pnl, g_rt[i].usd,
                          PriceToPts(g_rt[i].mfe), PriceToPts(g_rt[i].mae));
-      ln += StringFormat("%s,%.0f,%s,%s,", DoubleToString(g_rt[i].sl0, _Digits), g_rt[i].pull, HedgeCode(i),
-                         (g_rt[i].hg_state == HG_NONE ? "" : DoubleToString(g_rt[i].hg_price, _Digits)));
-      ln += VTCsv(g_rt[i].hg_vt) + "\r\n";
+      ln += StringFormat("%s,%.0f\r\n", DoubleToString(g_rt[i].sl0, _Digits), g_rt[i].pull);
       FileWriteString(h, ln);
       rows++;
    }
@@ -2741,8 +2800,13 @@ void ReplayStep() {
    ReplayDraw();
    if(InpReplayCSV && g_rp_caught) {
       int done = 0;
-      for(int i = 0; i < ArraySize(g_rt); i++) if(ReplayRowDone(i)) done++;
+      for(int i = 0; i < ArraySize(g_rt); i++) if(g_rt[i].reason != RX_OPEN) done++;
       if(done != g_rp_csv_rows) ReplayWriteCSV();
+      if(InpHedgeTest) {
+         int hd = 0;
+         for(int h = 0; h < ArraySize(g_hg); h++) if(HedgeFinished(h)) hd++;
+         if(hd != g_hg_csv_rows) HedgeWriteCSV(hd);
+      }
    }
    if(InpObserveMode && InpReplayCSV && g_rp_caught) {
       int fin = 0;
@@ -3016,7 +3080,7 @@ void UpdateDashboard(int ts, datetime now) {
    string news_str = NextNewsText(now);
 
    long   now_msc = MathMax(g_last_tick_msc, (long)now * 1000);
-   string msg = StringFormat("=== 📊 7-Lines Counter EA v11.30 (เข้าไม้: %s | T1 %d วิ / T2 %d วิ / T3 ทันที | ถอยจากยอดไส้ ≥ %.0f | Z หลุด T1 = ยกเลิก | SL = High/Low แท่ง ± %.0f) ===\n",
+   string msg = StringFormat("=== 📊 7-Lines Counter EA v11.31 (เข้าไม้: %s | T1 %d วิ / T2 %d วิ / T3 ทันที | ถอยจากยอดไส้ ≥ %.0f | Z หลุด T1 = ยกเลิก | SL = High/Low แท่ง ± %.0f) ===\n",
                              LogicName(), InpT1_Sec, InpT2_Sec, InpMinPull_Pts, InpSLBeyond_Pts);
    msg += StringFormat("Z (%s, %d) : %s\n", EnumToString(InpZ_Timeframe), InpZ_Period, z_str);
    msg += StringFormat("Z แท่งที่เพิ่งปิด : R %+.2f / S %+.2f%s\n", g_prev_close_zr, g_prev_close_zs, (news_str == "" ? "" : " | " + news_str));
