@@ -3,6 +3,12 @@
 //|      Fast Mean-Reversion Z-Score EA for XAUUSD (Indicator v8.82)  |
 //+------------------------------------------------------------------+
 //
+// 🆕 v11.10: โหมดสังเกต "ให้ตลาดตอบเอง" ใน Tick Replay (ไม้สมมติ ไม่เทรดจริง)
+//  • สัญญาณ T1-T3 → ไม่เข้า จำพิกัด P → สังเกตถึงนาทีที่ 10 ของแท่งถัดไป
+//    ทะลุเกิน P ≥ 2,000 / 4,000 / 6,000 → ไม้ตามน้ำของแต่ละระยะ (SL = P ∓ 1,000)
+//    จบช่วงสังเกต → ไม้สวนกลับ (SL = ยอดไส้ตั้งแต่ต้นแท่งสัญญาณ ± 1,000) — บันทึกทุกครั้งเพื่อเทียบภายหลัง
+//  • มาร์ก ◆ ที่พิกัด P + สรุปบน Dashboard + MQL5/Files/7LCEA_Observe_<symbol>.csv — EA จริงยังเทรดแบบ v11.00
+//
 // 🆕 v11.00: ไม้วิกฤต 3 ระดับ + ยกเลิกเมื่อ Z หลุดเกณฑ์ + บันทึกปัจจัยลง CSV
 //  • ยกเลิกการเปลี่ยนเป็นตามน้ำ — ทุกไม้เป็นไม้สวนกลับ
 //  • ระดับของสัญญาณเดียวกัน (ยิงไม้เดียว): T1 Z ≥ 2.5 รอไม่มีค่าสุดขั้วใหม่ 3 วิ / T2 Z ≥ 3.0 รอ 1 วิ / T3 Z ≥ 3.5 ยิงทันที
@@ -141,7 +147,7 @@
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "11.00"
+#property version     "11.10"
 #property description "สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว สำหรับ XAUUSD (บัญชี Hedging)"
 
 #include <Trade\Trade.mqh>
@@ -218,6 +224,11 @@ input bool            InpShowReplay        = true;       // Tick Replay: จำ�
 input int             InpReplayDays        = 10;         // Tick Replay: ย้อนหลังกี่วัน (1-60)
 input bool            InpShowReplayBlocked = true;       // Tick Replay: มาร์กสัญญาณที่ถูกตัวกรองทิ้ง
 input bool            InpReplayCSV         = true;       // Tick Replay: บันทึกปัจจัยของทุกไม้ลงไฟล์ CSV (MQL5/Files)
+input bool            InpObserveMode       = true;       // 🔭 Tick Replay: โหมดสังเกต "ให้ตลาดตอบเอง" (ไม้สมมติ ไม่เทรดจริง) + CSV
+input int             InpObsWindow_Min     = 10;         // โหมดสังเกต: สังเกตถึงนาทีที่เท่านี้ของแท่งถัดไป
+input double          InpObsTrend1_Pts     = 2000.0;     // โหมดสังเกต: ทะลุเกินพิกัด ≥ ระยะนี้ = เทรนด์ (ชุดที่ 1)
+input double          InpObsTrend2_Pts     = 4000.0;     // โหมดสังเกต: ระยะเทรนด์ชุดที่ 2
+input double          InpObsTrend3_Pts     = 6000.0;     // โหมดสังเกต: ระยะเทรนด์ชุดที่ 3
 input bool            InpShowNewsHistory   = true;       // แสดงช่วงข่าวบนกราฟ (แสดงอย่างเดียว ไม่มีผลกับการเทรด, ใช้ไม่ได้ใน Tester)
 input string          InpNewsCurrency      = "USD";      // สกุลเงินของข่าวที่แสดง
 input bool            InpNewsIncludeMedium = false;      // แสดงข่าวระดับ Medium ด้วย
@@ -254,6 +265,7 @@ input color           InpClrSimWin         = clrLimeGreen;      // มาร์�
 input color           InpClrSimLoss        = clrTomato;         // มาร์กจำลอง: เส้นเข้า→ออก ไม้ขาดทุน
 input color           InpClrSimBlocked     = clrDimGray;        // มาร์กจำลอง: สัญญาณที่ถูกตัวกรองทิ้ง
 input color           InpClrSimCool        = clrDeepPink;       // มาร์กจำลอง: จุดเริ่ม Cool down
+input color           InpClrObs            = clrGold;           // โหมดสังเกต: มาร์กพิกัด P
 input color           InpClrNewsLine       = clrMediumPurple;   // เส้นเวลาข่าว
 input color           InpClrNewsZone       = C'45,35,70';       // แถบแท่งข่าว
 
@@ -1795,6 +1807,7 @@ void ReplayReset() {
    g_rp_cursor = 0; g_rp_retry = 0; g_rp_ticks = 0;
    g_rp_pz_ok = false; g_rp_dhi = 0.0; g_rp_dlo = 0.0; g_rp_phi = 0.0; g_rp_plo = 0.0;
    g_rp_closed = 0; g_rp_csv_rows = -1;
+   ObsReset();
    g_rp_status = "ยังไม่เริ่ม";
 }
 
@@ -2042,6 +2055,7 @@ void ReplayTick(const MqlTick &tk) {
    datetime t   = (datetime)(msc / 1000);
 
    ReplayTimeEvents(msc);                 // A) เหตุการณ์ตามเวลาด้วยราคาเดิม (ตัด 60 วิ / ยิงหลังครบเวลาเฝ้า)
+   if(InpObserveMode) ObsTimeEvents(msc);
    if(!ReplayBarFor(t)) return;           // B) แท่งของ tick นี้
    if(g_rp_hi <= 0.0 || bid > g_rp_hi) g_rp_hi = bid;
    if(g_rp_lo <= 0.0 || bid < g_rp_lo) g_rp_lo = bid;
@@ -2062,11 +2076,343 @@ void ReplayTick(const MqlTick &tk) {
       WatchUpdate(g_rp_ws, -1, zr, zs, msc, bid);
       WatchUpdate(g_rp_wb,  1, zr, zs, msc, bid);
    }
+
+   // E) โหมดสังเกต: ระบบแยก (ไม้สมมติ) — เฝ้าเมื่อไม่มีการสังเกตค้าง + เลยนาทีแรก, ไม่มี Cool down
+   if(InpObserveMode) {
+      ObsTick(msc, bid, ask);
+      if(g_ob_active >= 0 || early || !zok || g_rp_bar_chg) { WatchReset(g_ob_ws); WatchReset(g_ob_wb); }
+      if(g_ob_active < 0 && !early && zok) {
+         WatchUpdate(g_ob_ws, -1, zr, zs, msc, bid);
+         WatchUpdate(g_ob_wb,  1, zr, zs, msc, bid);
+      }
+   }
    g_rp_bar_chg = false;
 
    g_rp_bid = bid; g_rp_ask = ask; g_rp_msc = msc;
    g_rp_have = true;
    g_rp_ticks++;
+}
+
+//====================================================================
+// 🔭 OBSERVE MODE (Tick Replay เท่านั้น — ไม้สมมติ ไม่เทรดจริง): "ให้ตลาดตอบเอง"
+//   สัญญาณ (T1-T3 แบบเดียวกับ EA) → ยังไม่เข้า จำพิกัด P → สังเกตจนถึงนาทีที่ InpObsWindow_Min ของแท่งถัดไป
+//   ระหว่างสังเกต ราคาทะลุเกิน P ≥ ระยะเทรนด์ → ไม้ตามน้ำทันที (SL = P ∓ InpSLBeyond_Pts) — บันทึก 3 ระยะพร้อมกัน
+//   จบช่วงสังเกต → ไม้สวนกลับ (SL = ยอดไส้ตั้งแต่ต้นแท่งสัญญาณถึงตอนเข้า ± InpSLBeyond_Pts)
+//   ไม้สวนถูกเปิดทุกครั้ง (วิเคราะห์ภายหลังว่าระยะเทรนด์ไหนควรตัดไม้สวนทิ้ง) → บันทึกลง CSV แยกไฟล์
+//   ครั้งละ 1 การสังเกต (ไม่รับสัญญาณใหม่จนกว่าจะจบช่วงสังเกต), ไม่มี Cool down
+//====================================================================
+// ไม้สมมติ (จัดการด้วย TP / SL / โล่ / ตัดจบ / ปิดสัปดาห์ แบบเดียวกับ Replay)
+struct VTrade {
+   bool     used;      // เปิดได้ (false = ติดตัวกรอง)
+   bool     open;      // กำลังถือ
+   int      dir;
+   double   lot, p_in, sl, tp;
+   long     msc_in;
+   bool     act;
+   long     last_trail;
+   datetime fclose;
+   double   mfe, mae;
+   long     msc_out;
+   double   p_out;
+   int      reason;
+};
+
+struct ObsSig {
+   long     msc;        // เวลาสัญญาณ
+   int      dir;        // ทิศสวนกลับ (-1 SELL / 1 BUY)
+   int      tier;
+   double   p;          // พิกัด P (Bid ตอนสัญญาณ)
+   double   zr, zs;
+   datetime bar_t;      // แท่งสัญญาณ (N)
+   long     end_msc;    // จบช่วงสังเกต
+   double   ext;        // ยอดไส้ (SELL: High สูงสุด / BUY: Low ต่ำสุด) ตั้งแต่ต้นแท่ง N
+   double   max_exc;    // ระยะทะลุเกิน P สูงสุดระหว่างสังเกต (ราคา)
+   double   end_exc;    // ระยะทะลุ ณ ตอนจบช่วงสังเกต (ติดลบ = ราคาถอยห่างจาก P)
+   bool     done;       // จบช่วงสังเกตแล้ว
+   int      ci;         // ไม้สวน (index ใน g_vt, -1 = ไม่มี)
+   int      t1, t2, t3; // ไม้ตามน้ำเมื่อทะลุเกินระยะ 1 / 2 / 3
+   bool     drawn_final;
+};
+
+VTrade     g_vt[];
+int        g_vt_live[];          // ไม้สมมติที่ยังถืออยู่
+ObsSig     g_ob[];
+int        g_ob_active    = -1;  // การสังเกตที่ยังไม่จบ
+WatchState g_ob_ws;
+WatchState g_ob_wb;
+int        g_ob_csv_rows  = -1;
+
+void ObsReset() {
+   ArrayResize(g_vt, 0);
+   ArrayResize(g_vt_live, 0);
+   ArrayResize(g_ob, 0);
+   g_ob_active   = -1;
+   g_ob_csv_rows = -1;
+   WatchReset(g_ob_ws);
+   WatchReset(g_ob_wb);
+}
+
+void VTClose(int k, long msc, double price, int reason) {
+   g_vt[k].open    = false;
+   g_vt[k].msc_out = msc;
+   g_vt[k].p_out   = price;
+   g_vt[k].reason  = reason;
+   int n = ArraySize(g_vt_live), w = 0;
+   for(int j = 0; j < n; j++) if(g_vt_live[j] != k) g_vt_live[w++] = g_vt_live[j];
+   ArrayResize(g_vt_live, w);
+}
+
+// เปิดไม้สมมติที่ราคาตลาด — ติดตัวกรอง (เวลาตลาด / สเปรด) = บันทึกว่าเปิดไม่ได้
+int VTOpen(int dir, double lot, double sl, long msc, double bid, double ask) {
+   int k = ArraySize(g_vt);
+   ArrayResize(g_vt, k + 1);
+   g_vt[k].used = false; g_vt[k].open = false; g_vt[k].dir = dir; g_vt[k].lot = lot;
+   g_vt[k].p_in = 0.0; g_vt[k].sl = sl; g_vt[k].tp = 0.0; g_vt[k].msc_in = msc;
+   g_vt[k].act = false; g_vt[k].last_trail = 0; g_vt[k].fclose = 0;
+   g_vt[k].mfe = 0.0; g_vt[k].mae = 0.0; g_vt[k].msc_out = 0; g_vt[k].p_out = 0.0; g_vt[k].reason = RX_OPEN;
+   datetime t = (datetime)(msc / 1000);
+   if(EntryBlockReason(GetTimeStateAt(t), bid, ask) != "") return k;
+   double price = (dir == -1) ? bid : ask;
+   g_vt[k].used   = true;
+   g_vt[k].open   = true;
+   g_vt[k].p_in   = price;
+   g_vt[k].tp     = price + dir * PtsToPrice(InpTP_Pts);
+   g_vt[k].fclose = ForceCloseTimeAt(t);
+   int n = ArraySize(g_vt_live);
+   ArrayResize(g_vt_live, n + 1);
+   g_vt_live[n] = k;
+   return k;
+}
+
+// SL / TP / โล่ ด้วยราคา tick ปัจจุบัน
+void VTTick(int k, long msc, double bid, double ask) {
+   if(!g_vt[k].open) return;
+   int    d   = g_vt[k].dir;
+   double fav = (d == -1) ? (g_vt[k].p_in - ask) : (bid - g_vt[k].p_in);
+   if(fav > g_vt[k].mfe) g_vt[k].mfe = fav;
+   if(fav < g_vt[k].mae) g_vt[k].mae = fav;
+   if(d == -1) {
+      if(ask >= g_vt[k].sl) { VTClose(k, msc, ask, g_vt[k].act ? RX_TRAIL : RX_SL); return; }
+      if(ask <= g_vt[k].tp) { VTClose(k, msc, g_vt[k].tp, RX_TP); return; }
+   } else {
+      if(bid <= g_vt[k].sl) { VTClose(k, msc, bid, g_vt[k].act ? RX_TRAIL : RX_SL); return; }
+      if(bid >= g_vt[k].tp) { VTClose(k, msc, g_vt[k].tp, RX_TP); return; }
+   }
+   long sec      = msc / 1000;
+   bool do_trail = false;
+   if(!g_vt[k].act) {
+      if(fav >= PtsToPrice(InpTrailStart_Pts)) { g_vt[k].act = true; do_trail = true; }
+   }
+   else if(sec - g_vt[k].last_trail >= InpTrailInterval_Sec) do_trail = true;
+   if(do_trail) {
+      double dist = PtsToPrice(InpTrailDist_Pts);
+      if(d == -1) { double nsl = ask + dist; if(nsl < g_vt[k].sl) g_vt[k].sl = nsl; }
+      else        { double nsl = bid - dist; if(nsl > g_vt[k].sl) g_vt[k].sl = nsl; }
+      g_vt[k].last_trail = sec;
+   }
+}
+
+// ตัดจบตามเวลา / ปิดก่อนตลาดปิดสัปดาห์ (ราคาของ tick ก่อนหน้า)
+void VTTime(int k, long msc, double bid, double ask) {
+   if(!g_vt[k].open) return;
+   long   wk  = (g_vt[k].fclose > 0) ? (long)g_vt[k].fclose * 1000 : LONG_MAX;
+   long   cut = (InpQuickWindow_Sec > 0 && !g_vt[k].act) ? g_vt[k].msc_in + (long)InpQuickWindow_Sec * 1000 : LONG_MAX;
+   double px  = (g_vt[k].dir == -1) ? ask : bid;
+   if(wk <= cut && wk <= msc)       VTClose(k, wk,  px, RX_WEEK);
+   else if(cut < wk && cut <= msc)  VTClose(k, cut, px, RX_CUT);
+}
+
+double VTPts(int k) {
+   if(k < 0 || !g_vt[k].used || g_vt[k].open) return 0.0;
+   return PriceToPts((g_vt[k].dir == -1) ? (g_vt[k].p_in - g_vt[k].p_out) : (g_vt[k].p_out - g_vt[k].p_in));
+}
+
+double VTUsd(int k) {
+   if(k < 0 || !g_vt[k].used || g_vt[k].open) return 0.0;
+   double diff = (g_vt[k].dir == -1) ? (g_vt[k].p_in - g_vt[k].p_out) : (g_vt[k].p_out - g_vt[k].p_in);
+   return diff * g_vt[k].lot * g_contract;
+}
+
+bool VTDone(int k) { return (k < 0 || !g_vt[k].open); }
+
+bool ObsFinished(int i) {
+   return g_ob[i].done && VTDone(g_ob[i].ci) && VTDone(g_ob[i].t1) && VTDone(g_ob[i].t2) && VTDone(g_ob[i].t3);
+}
+
+// สัญญาณ → เริ่มสังเกต (ราคา/แท่ง ของ tick ก่อนหน้า = ตอนสัญญาณ)
+void ObsFire(int dir, long fire_msc) {
+   WatchState w;
+   if(dir == -1) w = g_ob_ws; else w = g_ob_wb;
+   datetime t = (datetime)(fire_msc / 1000);
+   WatchReset(g_ob_ws);
+   WatchReset(g_ob_wb);
+   if(InBarStartDelay(t) || EntryBlockReason(GetTimeStateAt(t), g_rp_bid, g_rp_ask) != "") return;   // ติดตัวกรอง = ทิ้งสัญญาณ
+
+   int i = ArraySize(g_ob);
+   ArrayResize(g_ob, i + 1);
+   long per = PeriodSeconds(InpZ_Timeframe);
+   g_ob[i].msc     = fire_msc;
+   g_ob[i].dir     = dir;
+   g_ob[i].tier    = w.tier;
+   g_ob[i].p       = g_rp_bid;
+   g_ob[i].zr      = g_rp_zr;
+   g_ob[i].zs      = g_rp_zs;
+   g_ob[i].bar_t   = g_rp_bar_t;
+   g_ob[i].end_msc = ((long)g_rp_bar_t + per + (long)InpObsWindow_Min * 60) * 1000;
+   if(dir == -1) g_ob[i].ext = MathMax(g_rp_hi, g_rp_bid);
+   else          g_ob[i].ext = (g_rp_lo > 0.0) ? MathMin(g_rp_lo, g_rp_bid) : g_rp_bid;
+   g_ob[i].max_exc = 0.0;
+   g_ob[i].end_exc = 0.0;
+   g_ob[i].done    = false;
+   g_ob[i].ci = -1; g_ob[i].t1 = -1; g_ob[i].t2 = -1; g_ob[i].t3 = -1;
+   g_ob[i].drawn_final = false;
+   g_ob_active = i;
+}
+
+// จบช่วงสังเกต → ไม้สวนกลับ (ราคาของ tick ก่อนหน้า)
+void ObsDecide(long msc) {
+   int i = g_ob_active;
+   int d = g_ob[i].dir;
+   g_ob[i].end_exc = (d == -1) ? (g_rp_bid - g_ob[i].p) : (g_ob[i].p - g_rp_bid);
+   double sl = g_ob[i].ext - d * PtsToPrice(InpSLBeyond_Pts);
+   g_ob[i].ci   = VTOpen(d, TierLot(g_ob[i].tier), sl, msc, g_rp_bid, g_rp_ask);
+   g_ob[i].done = true;
+   g_ob_active  = -1;
+}
+
+// เหตุการณ์ตามเวลา (เรียกก่อนประมวลผล tick ใหม่ / ทุกวินาทีหลังเล่นซ้ำถึงปัจจุบัน)
+void ObsTimeEvents(long msc) {
+   if(!g_rp_have) return;
+   for(int j = ArraySize(g_vt_live) - 1; j >= 0; j--)
+      if(j < ArraySize(g_vt_live)) VTTime(g_vt_live[j], msc, g_rp_bid, g_rp_ask);
+   if(g_ob_active >= 0 && msc >= g_ob[g_ob_active].end_msc) ObsDecide(g_ob[g_ob_active].end_msc);
+   if(g_ob_active < 0) {
+      if(WatchReady(g_ob_ws, msc))      ObsFire(-1, WatchDeadline(g_ob_ws));
+      else if(WatchReady(g_ob_wb, msc)) ObsFire( 1, WatchDeadline(g_ob_wb));
+   }
+}
+
+// ทุก tick: ไม้สมมติ + ยอดไส้ / ระยะทะลุ / ไม้ตามน้ำ ของการสังเกตที่ค้างอยู่
+void ObsTick(long msc, double bid, double ask) {
+   for(int j = ArraySize(g_vt_live) - 1; j >= 0; j--)
+      if(j < ArraySize(g_vt_live)) VTTick(g_vt_live[j], msc, bid, ask);
+   int i = g_ob_active;
+   if(i < 0) return;
+   int d = g_ob[i].dir;
+   if(d == -1) { if(bid > g_ob[i].ext) g_ob[i].ext = bid; }
+   else        { if(bid < g_ob[i].ext) g_ob[i].ext = bid; }
+   double exc = (d == -1) ? (bid - g_ob[i].p) : (g_ob[i].p - bid);
+   if(exc > g_ob[i].max_exc) g_ob[i].max_exc = exc;
+   double sl  = g_ob[i].p + d * PtsToPrice(InpSLBeyond_Pts);   // ไม้ตามน้ำ: ราคากลับมาเลยพิกัด = ทะลุล้มเหลว
+   double lot = NormalizeLot(InpLot);
+   if(g_ob[i].t1 < 0 && exc >= PtsToPrice(InpObsTrend1_Pts)) g_ob[i].t1 = VTOpen(-d, lot, sl, msc, bid, ask);
+   if(g_ob[i].t2 < 0 && exc >= PtsToPrice(InpObsTrend2_Pts)) g_ob[i].t2 = VTOpen(-d, lot, sl, msc, bid, ask);
+   if(g_ob[i].t3 < 0 && exc >= PtsToPrice(InpObsTrend3_Pts)) g_ob[i].t3 = VTOpen(-d, lot, sl, msc, bid, ask);
+}
+
+// สรุปตามระยะเทรนด์: ทะลุถึงระยะ → นับไม้ตามน้ำ, ไม่ถึง → นับไม้สวน
+string ObsStatsText() {
+   if(!InpObserveMode) return "";
+   int    n = 0;
+   int    nc[3], nt[3];
+   double uc[3], ut[3], thr[3];
+   ArrayInitialize(nc, 0); ArrayInitialize(nt, 0); ArrayInitialize(uc, 0.0); ArrayInitialize(ut, 0.0);
+   thr[0] = PtsToPrice(InpObsTrend1_Pts); thr[1] = PtsToPrice(InpObsTrend2_Pts); thr[2] = PtsToPrice(InpObsTrend3_Pts);
+   for(int i = 0; i < ArraySize(g_ob); i++) {
+      if(!ObsFinished(i)) continue;
+      n++;
+      int tk[3];
+      tk[0] = g_ob[i].t1; tk[1] = g_ob[i].t2; tk[2] = g_ob[i].t3;
+      for(int k = 0; k < 3; k++) {
+         if(g_ob[i].max_exc >= thr[k]) { if(tk[k] >= 0 && g_vt[tk[k]].used) { nt[k]++; ut[k] += VTUsd(tk[k]); } }
+         else if(g_ob[i].ci >= 0 && g_vt[g_ob[i].ci].used) { nc[k]++; uc[k] += VTUsd(g_ob[i].ci); }
+      }
+   }
+   string s = StringFormat("\n🔭 Observe %d สัญญาณ (ไม้สมมติ)", n);
+   s += StringFormat(" | ทะลุ≥%.0f: สวน %d $%+.2f / ตาม %d $%+.2f", InpObsTrend1_Pts, nc[0], uc[0], nt[0], ut[0]);
+   s += StringFormat(" | ≥%.0f: สวน %d $%+.2f / ตาม %d $%+.2f", InpObsTrend2_Pts, nc[1], uc[1], nt[1], ut[1]);
+   s += StringFormat(" | ≥%.0f: สวน %d $%+.2f / ตาม %d $%+.2f", InpObsTrend3_Pts, nc[2], uc[2], nt[2], ut[2]);
+   if(g_ob_csv_rows >= 0) s += StringFormat("\n   📄 CSV: MQL5\\Files\\%s", ObsCSVName());
+   return s;
+}
+
+string ObsCSVName() { return "7LCEA_Observe_" + _Symbol + ".csv"; }
+
+string VTCsv(int k) {
+   if(k < 0)          return ",,,,,,,,,,";
+   if(!g_vt[k].used)  return "BLOCKED,,,,,,,,,,";
+   return StringFormat("%s,%s,%s,%.0f,%s,%d,%.0f,%.2f,%.0f,%.0f,",
+                       TimeToString((datetime)(g_vt[k].msc_in / 1000), TIME_DATE|TIME_SECONDS),
+                       DoubleToString(g_vt[k].p_in, _Digits), DoubleToString(g_vt[k].sl, _Digits),
+                       PriceToPts(MathAbs(g_vt[k].sl - g_vt[k].p_in)), ReplayReasonCode(g_vt[k].reason),
+                       (int)((g_vt[k].msc_out - g_vt[k].msc_in) / 1000), VTPts(k), VTUsd(k),
+                       PriceToPts(g_vt[k].mfe), PriceToPts(g_vt[k].mae));
+}
+
+string VTCsvHead(string pre) {
+   return pre + "_time," + pre + "_price," + pre + "_sl," + pre + "_sl_pts," + pre + "_exit," + pre + "_hold_sec," +
+          pre + "_pnl_pts," + pre + "_usd," + pre + "_mfe_pts," + pre + "_mae_pts,";
+}
+
+// เขียนการสังเกตที่จบครบแล้วทั้งหมดลง MQL5/Files (เขียนใหม่ทั้งไฟล์เมื่อมีเพิ่ม)
+void ObsWriteCSV(int rows) {
+   string fn = ObsCSVName();
+   int h = FileOpen(fn, FILE_WRITE | FILE_TXT | FILE_ANSI);
+   if(h == INVALID_HANDLE) { PrintFormat("⚠️ เขียนไฟล์ %s ไม่สำเร็จ (error %d)", fn, GetLastError()); return; }
+   string head = "sig_time,side,tier,P,z_reg,z_sma,bar_time,window_end,ext_at_end,max_exc_pts,end_exc_pts," +
+                 VTCsvHead("cnt") +
+                 VTCsvHead(StringFormat("trd%.0f", InpObsTrend1_Pts)) +
+                 VTCsvHead(StringFormat("trd%.0f", InpObsTrend2_Pts)) +
+                 VTCsvHead(StringFormat("trd%.0f", InpObsTrend3_Pts));
+   FileWriteString(h, head + "\r\n");
+   for(int i = 0; i < ArraySize(g_ob); i++) {
+      if(!ObsFinished(i)) continue;
+      string ln = StringFormat("%s,%s,%d,%s,%.3f,%.3f,%s,%s,%s,%.0f,%.0f,",
+                               TimeToString((datetime)(g_ob[i].msc / 1000), TIME_DATE|TIME_SECONDS),
+                               (g_ob[i].dir == -1 ? "SELL" : "BUY"), g_ob[i].tier, DoubleToString(g_ob[i].p, _Digits),
+                               g_ob[i].zr, g_ob[i].zs, TimeToString(g_ob[i].bar_t, TIME_DATE|TIME_MINUTES),
+                               TimeToString((datetime)(g_ob[i].end_msc / 1000), TIME_DATE|TIME_MINUTES),
+                               DoubleToString(g_ob[i].ext, _Digits), PriceToPts(g_ob[i].max_exc), PriceToPts(g_ob[i].end_exc));
+      ln += VTCsv(g_ob[i].ci) + VTCsv(g_ob[i].t1) + VTCsv(g_ob[i].t2) + VTCsv(g_ob[i].t3);
+      FileWriteString(h, ln + "\r\n");
+   }
+   FileClose(h);
+   if(g_ob_csv_rows < 0) PrintFormat("📄 บันทึกโหมดสังเกต %d สัญญาณ ลง MQL5\\Files\\%s (อัปเดตเมื่อมีเพิ่ม)", rows, fn);
+   g_ob_csv_rows = rows;
+}
+
+// มาร์กพิกัด P บนกราฟ + tooltip ผลการสังเกต
+void DrawObs(int i) {
+   datetime t  = (datetime)(g_ob[i].msc / 1000);
+   string   nm = OBJ_PREFIX + "OB_" + IntegerToString(g_ob[i].msc);
+   if(ObjectFind(0, nm) < 0) {
+      ObjectCreate(0, nm, OBJ_ARROW, 0, t, g_ob[i].p);
+      ObjectSetInteger(0, nm, OBJPROP_ARROWCODE, 117);   // ◆
+      ObjectSetInteger(0, nm, OBJPROP_COLOR, InpClrObs);
+      ObjectSetInteger(0, nm, OBJPROP_ANCHOR, ANCHOR_CENTER);
+      ObjectSetInteger(0, nm, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, nm, OBJPROP_HIDDEN, true);
+   }
+   bool   fin = ObsFinished(i);
+   string tip = StringFormat("🔭 สังเกต %s T%d @ %s (%s) | จบช่วงสังเกต %s",
+                             (g_ob[i].dir == -1 ? "SELL" : "BUY"), g_ob[i].tier, DoubleToString(g_ob[i].p, _Digits),
+                             TimeToString(t, TIME_DATE|TIME_SECONDS), TimeToString((datetime)(g_ob[i].end_msc / 1000), TIME_MINUTES));
+   tip += StringFormat("\nทะลุเกินพิกัดสูงสุด %.0f จุด | ตอนจบห่าง %+.0f จุด", PriceToPts(g_ob[i].max_exc), PriceToPts(g_ob[i].end_exc));
+   if(g_ob[i].done)
+      tip += StringFormat("\nสวน: %s", (g_ob[i].ci >= 0 && g_vt[g_ob[i].ci].used)
+                          ? (g_vt[g_ob[i].ci].open ? "ถืออยู่" : StringFormat("%s %+.0f จุด $%+.2f", ReplayReasonName(g_vt[g_ob[i].ci].reason), VTPts(g_ob[i].ci), VTUsd(g_ob[i].ci)))
+                          : "ติดตัวกรอง");
+   int    tk[3];
+   double th[3];
+   tk[0] = g_ob[i].t1; tk[1] = g_ob[i].t2; tk[2] = g_ob[i].t3;
+   th[0] = InpObsTrend1_Pts; th[1] = InpObsTrend2_Pts; th[2] = InpObsTrend3_Pts;
+   for(int k = 0; k < 3; k++) {
+      if(tk[k] < 0) continue;
+      tip += StringFormat("\nตาม (ทะลุ≥%.0f): %s", th[k], !g_vt[tk[k]].used ? "ติดตัวกรอง"
+                          : (g_vt[tk[k]].open ? "ถืออยู่" : StringFormat("%s %+.0f จุด $%+.2f", ReplayReasonName(g_vt[tk[k]].reason), VTPts(tk[k]), VTUsd(tk[k]))));
+   }
+   ObjectSetString(0, nm, OBJPROP_TOOLTIP, tip);
+   g_ob[i].drawn_final = fin;
 }
 
 string ReplayReasonName(int r) {
@@ -2203,6 +2549,9 @@ void DrawReplayCool(int k) {
 void ReplayDraw() {
    for(int i = 0; i < ArraySize(g_rt); i++)
       if(!g_rt[i].drawn_final) DrawReplayTrade(i);
+   if(InpObserveMode)
+      for(int i = 0; i < ArraySize(g_ob); i++)
+         if(!g_ob[i].drawn_final) DrawObs(i);
    for(; g_rc_drawn < ArraySize(g_rc); g_rc_drawn++) DrawReplayCool(g_rc_drawn);
    if(InpShowReplayBlocked)
       for(; g_rb_drawn < ArraySize(g_rb); g_rb_drawn++) DrawReplayBlocked(g_rb_drawn);
@@ -2241,6 +2590,7 @@ string ReplayStatsText() {
                      cnt[1], usd_st[1], cnt[2], usd_st[2], cnt[3], usd_st[3], ArraySize(g_rc), tail);
    if(InpReplayCSV && g_rp_csv_rows >= 0)
       s += StringFormat("\n   📄 CSV: MQL5\\Files\\%s (%d ไม้)", ReplayCSVName(), g_rp_csv_rows);
+   s += ObsStatsText();
    return s;
 }
 
@@ -2330,12 +2680,18 @@ void ReplayStep() {
    }
    if(!g_rp_caught && to >= now_msc - 2000) g_rp_caught = true;
    if(g_rp_caught) ReplayTimeEvents(now_msc);   // เวลาผ่านไปโดยไม่มี tick (ตัด 60 วิ / ยิงหลังครบเวลาเฝ้า)
+   if(g_rp_caught && InpObserveMode) ObsTimeEvents(now_msc);
 
    g_rp_status = g_rp_caught
                  ? StringFormat("✅ ครบแล้ว + เดินต่อแบบสด (%I64d ticks)", g_rp_ticks)
                  : StringFormat("⏳ กำลังเล่นซ้ำ ถึง %s (%I64d ticks)", TimeToString((datetime)(g_rp_cursor / 1000), TIME_DATE|TIME_MINUTES), g_rp_ticks);
    ReplayDraw();
    if(InpReplayCSV && g_rp_caught && g_rp_closed != g_rp_csv_rows) ReplayWriteCSV();
+   if(InpObserveMode && InpReplayCSV && g_rp_caught) {
+      int fin = 0;
+      for(int i = 0; i < ArraySize(g_ob); i++) if(ObsFinished(i)) fin++;
+      if(fin != g_ob_csv_rows) ObsWriteCSV(fin);
+   }
 }
 
 //====================================================================
@@ -2674,7 +3030,7 @@ void UpdateDashboard(int ts, datetime now) {
    string news_str = NextNewsText(now);
 
    long   now_msc = MathMax(g_last_tick_msc, (long)now * 1000);
-   string msg = StringFormat("=== 📊 7-Lines Counter EA v11.00 (เข้าไม้: %s | T1 %d วิ / T2 %d วิ / T3 ทันที | Z หลุด T1 = ยกเลิก | SL = High/Low แท่ง ± %.0f) ===\n",
+   string msg = StringFormat("=== 📊 7-Lines Counter EA v11.10 (เข้าไม้: %s | T1 %d วิ / T2 %d วิ / T3 ทันที | Z หลุด T1 = ยกเลิก | SL = High/Low แท่ง ± %.0f) ===\n",
                              LogicName(), InpT1_Sec, InpT2_Sec, InpSLBeyond_Pts);
    msg += StringFormat("Z (%s, %d) : %s\n", EnumToString(InpZ_Timeframe), InpZ_Period, z_str);
    msg += StringFormat("Z แท่งที่เพิ่งปิด : R %+.2f / S %+.2f%s\n", g_prev_close_zr, g_prev_close_zs, (news_str == "" ? "" : " | " + news_str));
@@ -2704,6 +3060,10 @@ int OnInit() {
    if(InpBarZBars < 1 || InpBarZBars > 20000) { Print("❌ InpBarZBars ต้องอยู่ระหว่าง 1-20000"); return(INIT_PARAMETERS_INCORRECT); }
    if(InpLevelBars < 1 || InpLevelBars > 2000) { Print("❌ InpLevelBars ต้องอยู่ระหว่าง 1-2000"); return(INIT_PARAMETERS_INCORRECT); }
    if(InpReplayDays < 1 || InpReplayDays > 60) { Print("❌ InpReplayDays ต้องอยู่ระหว่าง 1-60"); return(INIT_PARAMETERS_INCORRECT); }
+   if(InpObsWindow_Min < 0 || InpObsWindow_Min > 15 || InpObsTrend1_Pts <= 0.0 || InpObsTrend2_Pts <= 0.0 || InpObsTrend3_Pts <= 0.0) {
+      Print("❌ โหมดสังเกต: ช่วงสังเกตต้องอยู่ระหว่าง 0-15 นาที และระยะเทรนด์ต้องมากกว่า 0");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
    if(InpSellZ <= 0.0 || InpSellZ2 < InpSellZ || InpSellZ3 < InpSellZ2 || InpBuyZ <= 0.0 || InpBuyZ2 < InpBuyZ || InpBuyZ3 < InpBuyZ2 ||
       InpT1_Sec < 0 || InpT2_Sec < 0 || InpNoNewExtEps < 0.0 || InpTierLotStep < 0.0) {
       Print("❌ ค่า Z ระดับวิกฤต (ต้อง T1 ≤ T2 ≤ T3) / เวลาเฝ้า / Lot ต่อระดับ ไม่ถูกต้อง");
