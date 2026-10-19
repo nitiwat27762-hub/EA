@@ -6,6 +6,15 @@ indicator EA XAUUSD
 | ไฟล์ | เวอร์ชัน | รายละเอียด |
 |---|---|---|
 | `Indicators/Seven_Lines_Exhaustion_Ind.mq5` | 8.82 | 7-Lines Exhaustion + Z-Score (MQL5) |
+| `Indicators/Seven_Lines_Context_Ind.mq5` | 1.00 | เส้นบริบท (TF ใหญ่ / VWAP / Keltner / วันก่อน / EMA ยาว) + ป้ายค่าของแต่ละเส้นเมื่อ Z เกินเกณฑ์ |
+
+### Context Indicator v1.00
+- แยกเส้นบริบทจาก Counter EA v12.10 มาเป็น Indicator (Indicator Buffer → ย้อนหลังได้เท่าที่กราฟมีแท่ง, คำนวณบน TF ของกราฟ)
+  - ① เส้นกลาง Regression ± 2σ ของ TF ใหญ่ (H1) ② VWAP รายวัน ± 1σ / 2σ ③ Keltner (EMA20 ± 1.5 ATR, ขอบเปลี่ยนสีตอน Squeeze)
+  - ④ High / Low / Close วันก่อน + เลขกลม $10 / $50 ⑥ EMA 200
+- ป้ายตั้งบนแท่งที่ Z_reg และ Z_SMA ที่ High / Low เกิน ±2.00 ทั้งคู่ (สูตร Z เดียวกับ EA): Z ของแท่ง + ค่าของแต่ละเส้น ณ ราคาสุดขั้วนั้น
+  - TF ใหญ่ = Z_reg / Z_SMA ของ H1 | VW = ห่าง VWAP กี่ σ | KC / E200 / PDH / PDL = ห่างกี่ ATR | พัด = ความกว้างพัดเส้น 7 เส้น ÷ SD20 + ลำดับ
+  - ใช้ค่าเส้นของแท่งก่อนหน้า (ไม่มองอนาคต), tooltip มีรายละเอียดเต็ม, `InpLabelBars` = 0 แสดงทั้งหมด
 
 ### v8.82
 - สัญญาณย้อนหลังไม่ Repaint: จุดเริ่มจำลองถูกล็อก และสถานะถูกเดินต่อทีละแท่ง
@@ -16,7 +25,12 @@ indicator EA XAUUSD
 
 | ไฟล์ | เวอร์ชัน | รายละเอียด |
 |---|---|---|
-| `Experts/Seven_Lines_Counter_EA.mq5` | 12.10 | EA สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว (XAUUSD, บัญชี Hedging) |
+| `Experts/Seven_Lines_Counter_EA.mq5` | 12.20 | EA สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว (XAUUSD, บัญชี Hedging) |
+
+### Counter EA v12.20
+- ย้ายเส้นบริบททั้งหมดไปอยู่ใน `Indicators/Seven_Lines_Context_Ind.mq5` — EA กลับมามีแค่ระบบเทรด + Tick Replay แบบ v12.00
+  (ลบค่าบริบทบน Dashboard / tooltip ไม้จำลอง / `InpCtxCSV`)
+- คงไว้: เส้น 7 เส้นแสดงเฉพาะ Main (SMA) เป็นค่าเริ่มต้น (`InpShowLineMain`, `InpShowLineFast`)
 
 ### Counter EA v12.10 — เส้นบริบท (แสดงผลอย่างเดียว ไม่มีผลกับการเทรด)
 - เพิ่มเส้น / ค่าที่ใช้ข้อมูลคนละแบบกับ Z เพื่อหาความสัมพันธ์ (กลุ่ม Input "8. เส้นบริบท", เปิด/ปิดแยกแต่ละเส้น):
