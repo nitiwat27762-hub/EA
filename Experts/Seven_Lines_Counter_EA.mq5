@@ -29,13 +29,17 @@
 // 🧪 Tick Replay (บนกราฟ, ไม่ใช่ Strategy Tester)
 //  • เล่นซ้ำ tick จริงย้อนหลังด้วยกติกาเดียวกับ EA (รวมตัวกรองข่าว) → มาร์กบนกราฟ + สรุปบน Dashboard
 //
+// 🔬 เส้นบริบท (v12.10, แสดงผลอย่างเดียว ไม่มีผลกับการเทรด) — หาความสัมพันธ์กับ Z
+//  • Z ของ TF ใหญ่ + ความชัน, VWAP รายวัน ± σ, Keltner + Squeeze, H/L/C วันก่อน + เลขกลม, พัดเส้น 7 เส้น, EMA ยาว
+//  • วาดบนกราฟ + Dashboard + ค่าตอนเปิดไม้ใน tooltip ไม้จำลอง (+ CSV MQL5/Files/7LCEA_Context_<symbol>.csv ถ้าเปิด)
+//
 // ⚡ การประหยัด CPU
 //  • Z: แคชผลรวมของแท่งที่ปิดแล้ว คำนวณใหม่เฉพาะตอนขึ้นแท่งใหม่ (ต่อ Tick ไม่กี่บรรทัดคณิต)
 //  • จัดการไม้ / Dashboard / เส้น ทำบน OnTimer 1 วินาที, นับ SL ติดต่อกันผ่าน OnTradeTransaction
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "12.00"
+#property version     "12.10"
 #property description "สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว สำหรับ XAUUSD (บัญชี Hedging)"
 
 #include <Trade\Trade.mqh>
@@ -96,6 +100,8 @@ input bool            InpShowSmaZLines     = true;       // แสดงเส�
 input bool            InpShow7Lines        = true;       // วาดเส้น 7 เส้น (คำนวณในตัว EA บน TF ของกราฟ)
 input int             InpFastPeriod        = 10;         // Fast Period ของเส้น L1-L5
 input int             InpLinesBars         = 200;        // จำนวนแท่งย้อนหลังที่วาดเส้น 7 เส้น
+input bool            InpShowLineMain      = true;       // เส้น 7 เส้น: แสดง Main (SMA)
+input bool            InpShowLineFast      = false;      // เส้น 7 เส้น: แสดงเส้นเร็ว L1-L6 (EMA / LWMA / HMA / LSMA / ALMA / Kinematic)
 input bool            InpShowLiveZ         = true;       // แสดงป้ายค่า Z สด ณ ราคาปัจจุบัน
 input int             InpLiveZFontSize     = 11;         // ขนาดตัวอักษรป้าย Z สด
 input int             InpLiveZOffsetPx     = 10;         // ระยะห่างป้าย Z สดจากขอบขวาของกราฟ (พิกเซล)
@@ -110,7 +116,25 @@ input bool            InpShowReplayBlocked = true;       // Tick Replay: มา�
 input bool            InpShowNewsHistory   = true;       // แสดงช่วงข่าวบนกราฟ (ใช้ไม่ได้ใน Tester)
 input bool            InpNewsIncludeMedium = false;      // แสดงข่าวระดับ Medium บนกราฟด้วย (ไม่ใช้กรอง)
 
-input group "=== 8. สี ==="
+input group "=== 8. เส้นบริบท (หาความสัมพันธ์กับ Z — แสดงผลอย่างเดียว ไม่มีผลกับการเทรด) ==="
+input bool            InpShowCtx           = true;       // วาดเส้นบริบทบนกราฟ (ค่าบน Dashboard / Replay คำนวณเสมอ)
+input int             InpCtxBars           = 96;         // จำนวนแท่ง (TF ของ Z) ย้อนหลังที่วาดเส้นบริบท
+input ENUM_TIMEFRAMES InpCtxHTF            = PERIOD_H1;  // ① TF ใหญ่ของ Z (สูตรเดียวกับ Z หลัก)
+input bool            InpShowHTFZ          = true;       // ① วาดเส้นกลาง Regression ± T1σ ของ TF ใหญ่
+input bool            InpShowVWAP          = true;       // ② VWAP รายวัน ± 1σ / 2σ (tick volume จากแท่ง M1 ที่ปิดแล้ว)
+input bool            InpShowKeltner       = true;       // ③ Keltner Channel (EMA ± k × ATR)
+input int             InpKC_Period         = 20;         // ③ Period ของ EMA / ATR
+input double          InpKC_Mult           = 1.5;        // ③ ตัวคูณ ATR
+input double          InpSqueezeBB_Mult    = 2.0;        // ③ Squeeze = Bollinger (SMA20 ± ค่านี้ × SD) อยู่ในกรอบ Keltner
+input bool            InpShowPrevDay       = true;       // ④ High / Low / Close ของวันก่อน
+input bool            InpShowRound         = true;       // ④ เลขกลม
+input double          InpRoundStep         = 10.0;       // ④ ระยะเลขกลม (ราคา, ทอง = $10)
+input double          InpRoundMajor        = 50.0;       // ④ เลขกลมหลัก (เส้นเข้ม, ราคา)
+input bool            InpShowEMALong       = true;       // ⑥ EMA ยาว (TF ของ Z)
+input int             InpEMALong           = 200;        // ⑥ Period ของ EMA ยาว
+input bool            InpCtxCSV            = false;      // Tick Replay: บันทึกค่าบริบทตอนเปิดไม้จำลอง + ผล ลง CSV (MQL5/Files)
+
+input group "=== 9. สี ==="
 input color           InpClrMain           = clrGold;           // เส้น Main (SMA)
 input color           InpClrL1             = clrDeepSkyBlue;    // เส้น L1 (EMA)
 input color           InpClrL2             = clrDodgerBlue;     // เส้น L2 (LWMA)
@@ -142,6 +166,14 @@ input color           InpClrSimBlocked     = clrDimGray;        // มาร์�
 input color           InpClrSimCool        = clrDeepPink;       // มาร์กจำลอง: จุดเริ่ม Cool down
 input color           InpClrNewsLine       = clrMediumPurple;   // เส้นเวลาข่าว
 input color           InpClrNewsZone       = C'45,35,70';       // แถบแท่งข่าว
+input color           InpClrHTF            = clrCoral;          // ① เส้น TF ใหญ่
+input color           InpClrVWAP           = clrKhaki;          // ② VWAP
+input color           InpClrVWAPBand       = clrDarkKhaki;      // ② แถบ VWAP ± σ
+input color           InpClrKeltner        = clrMediumSlateBlue; // ③ Keltner
+input color           InpClrPrevDay        = clrLightGray;      // ④ H / L / C วันก่อน
+input color           InpClrRound          = C'70,70,70';       // ④ เลขกลม
+input color           InpClrRoundMajor     = C'120,120,120';    // ④ เลขกลมหลัก
+input color           InpClrEMALong        = clrWhiteSmoke;     // ⑥ EMA ยาว
 
 //====================================================================
 // 🔒 INTERNAL
@@ -192,6 +224,30 @@ struct ZCache {
    bool   ok;
    double ref, sY, sXY, sYY, sD, sDD, last_close;
    double prev_zr, prev_zs;   // Z ตอนปิดแท่งล่าสุด
+};
+
+// 🔬 บริบทจากแท่ง TF ของ Z ที่ปิดแล้ว (ไม่มองอนาคตใน Replay)
+struct CtxBar {
+   bool   ok;
+   double ema, atr, ema_long;   // EMA / ATR ของ Keltner, EMA ยาว
+   double bbkc;                 // ความกว้าง Bollinger ÷ ความกว้าง Keltner (< 1 = Squeeze)
+   int    sq_ago;               // แท่งนับจาก Squeeze ล่าสุด (0 = แท่งล่าสุดยัง Squeeze, −1 = ไม่พบใน 100 แท่ง)
+   bool   fan_ok;
+   double fan_w;                // พัดเส้น 7 เส้น: (สูงสุด − ต่ำสุด) ÷ SD20
+   int    fan_ord;              // เส้นเร็ว 6 เส้นที่อยู่เหนือ Main − ที่อยู่ใต้ Main (+6 เรียงขึ้นครบ … −6 เรียงลงครบ)
+   bool   pd_ok;
+   double pdh, pdl, pdc;        // High / Low / Close ของวันก่อน (วันตามเวลาเซิร์ฟเวอร์)
+};
+
+// 🔬 ค่าบริบท ณ ราคาหนึ่ง (ตอนเปิดไม้ / ตอนนี้) — ระยะเป็นจุด, + = ราคาอยู่เหนือ
+struct CtxFeat {
+   bool   h_ok;  double h_zr, h_zs, h_slope;          // Z ของ TF ใหญ่ + ความชันเส้นถดถอย (σ ต่อแท่ง)
+   bool   v_ok;  double v_px, v_sd, v_dist;           // VWAP, σ, (ราคา − VWAP) ÷ σ
+   bool   k_ok;  double k_pos, k_bbkc;  int k_sq_ago;  // (ราคา − EMA) ÷ ATR, BB/KC, Squeeze
+   bool   e_ok;  double e_pts;                        // ราคา − EMA ยาว
+   bool   p_ok;  double p_h, p_l, p_c;                // ราคา − PDH / PDL / PDC
+   double r_pts, rm_pts;                              // ราคา − เลขกลม / เลขกลมหลัก ที่ใกล้สุด
+   bool   f_ok;  double f_w;  int f_ord;              // พัดเส้น 7 เส้น
 };
 
 const double NEAR_ZONE = 0.5;   // ระยะ "ใกล้เกณฑ์" สำหรับสีป้าย Z
@@ -469,6 +525,16 @@ bool ZAtPrice(const ZCache &zc, double price, double &zr, double &zs,
    double d0 = price - zc.last_close;
    return ComputeZ(zc.sY + y, zc.sXY + (n - 1.0) * y, zc.sYY + y * y, y,
                    zc.sD + d0, zc.sDD + d0 * d0, zr, zs, fit, sig, fl, mn, ssd);
+}
+
+// ความชันเส้นถดถอย (ราคาต่อแท่ง) เมื่อแท่งปัจจุบันอยู่ที่ราคา price
+double SlopeAtPrice(const ZCache &zc, double price) {
+   double n   = (double)InpZ_Period;
+   double sx  = n * (n - 1.0) / 2.0;
+   double sxx = (n - 1.0) * n * (2.0 * n - 1.0) / 6.0;
+   double y   = price - zc.ref;
+   double sy  = zc.sY + y, sxy = zc.sXY + (n - 1.0) * y;
+   return (n * sxy - sx * sy) / (n * sxx - sx * sx);
 }
 
 ZCache g_zc;
@@ -1250,6 +1316,7 @@ string SegName(int L, datetime t) {
 
 // ช่วงเส้นของเส้น L ที่จบที่แท่ง i1 (ตั้งชื่อตามเวลาแท่ง → ไม่ต้องขยับทั้งชุดเมื่อขึ้นแท่งใหม่)
 void SetLineSegment(int L, int i1) {
+   if(L == 0 ? !InpShowLineMain : !InpShowLineFast) return;
    int i0 = i1 - 1;
    string name = SegName(L, g_lt[i1]);
    if(ObjectFind(0, name) < 0) {
@@ -1346,6 +1413,443 @@ void UpdateLinesLive() {
    g_lc[i] = bid;
    ComputeLinesAt(i);
    for(int L = 0; L < 7; L++) SetLineSegment(L, i);
+}
+
+//====================================================================
+// 🔬 เส้นบริบท (v12.10) — หาความสัมพันธ์กับ Z: วาดบนกราฟ + Dashboard + ค่าตอนเปิดไม้จำลอง (ไม่มีผลกับการเทรด)
+//   ① Z ของ TF ใหญ่ (สูตรเดียวกัน) + ความชัน  ② VWAP รายวัน ± σ (tick volume จากแท่ง M1 ที่ปิดแล้ว)
+//   ③ Keltner (EMA ± k·ATR) + Squeeze          ④ High / Low / Close วันก่อน + เลขกลม
+//   ⑤ ความกว้าง / ลำดับของพัดเส้น 7 เส้น (TF ของ Z)  ⑥ EMA ยาว
+//   ค่าระดับแท่ง (EMA / ATR / Squeeze / พัด / วันก่อน) ใช้แท่งที่ปิดแล้วเท่านั้น → Replay ไม่มองอนาคต
+//====================================================================
+#define CX_N 12
+const string          CX_LABEL[CX_N] = {"Keltner กลาง (EMA)", "Keltner บน", "Keltner ล่าง", "EMA ยาว", "VWAP รายวัน", "VWAP +1σ",
+                                        "VWAP −1σ", "VWAP +2σ", "VWAP −2σ", "TF ใหญ่: เส้นกลาง Regression", "TF ใหญ่: +T1σ", "TF ใหญ่: −T1σ"};
+const int             CX_WIDTH[CX_N] = {1, 1, 1, 2, 2, 1, 1, 1, 1, 1, 1, 1};
+const ENUM_LINE_STYLE CX_STYLE[CX_N] = {STYLE_DOT, STYLE_SOLID, STYLE_SOLID, STYLE_SOLID, STYLE_SOLID, STYLE_DOT,
+                                        STYLE_DOT, STYLE_DASH, STYLE_DASH, STYLE_DASH, STYLE_DASHDOT, STYLE_DASHDOT};
+
+CtxBar   g_cb;                     // ค่าระดับแท่ง (EA จริง)
+datetime g_cb_bar   = 0;           // แท่งปัจจุบัน (TF ของ Z) ตอนคำนวณ g_cb
+MqlRates g_cxr[];                  // แท่ง TF ของ Z สำหรับคำนวณ / วาด (รวมแท่งปัจจุบัน)
+ZCache   g_hzc;                    // Z ของ TF ใหญ่ (EA จริง)
+datetime g_hz_bar   = 0;
+datetime g_vw_m1    = 0;           // แท่ง M1 ปัจจุบันตอนรวม VWAP ล่าสุด
+double   g_vw_v = 0.0, g_vw_1 = 0.0, g_vw_2 = 0.0;   // Σv, Σv·tp, Σv·tp² ของแท่ง M1 ที่ปิดแล้ววันนี้
+CtxFeat  g_cx;                     // ค่าบริบท ณ ราคาปัจจุบัน (Dashboard)
+double   g_cxv[][CX_N];            // ค่าเส้นสำหรับวาด (เก่า→ใหม่, 0 = ไม่มีค่า)
+datetime g_cxt[];
+int      g_cx_cnt   = 0;
+double   g_cx_pema = 0.0, g_cx_patr = 0.0, g_cx_pel = 0.0, g_cx_pclose = 0.0;   // ของแท่งก่อนแท่งปัจจุบัน (อัปเดตสด)
+datetime g_cx_seg[];               // เวลาปลายของช่วงเส้นที่วาดอยู่
+double   g_rn_mid   = 0.0;         // เลขกลมกึ่งกลางที่วาดอยู่
+
+datetime DayStart(datetime t) { return t - (datetime)((long)t % DAY_SEC); }
+
+string HTFName() {
+   string s = EnumToString(InpCtxHTF);
+   StringReplace(s, "PERIOD_", "");
+   return s;
+}
+
+// index สุดท้ายของ r[0..n-1] ที่ปิดแล้ว ณ เวลา t (time + per ≤ t), −1 = ไม่มี
+int LastClosedIdx(const MqlRates &r[], int n, datetime t, long per) {
+   int lo = 0, hi = n - 1, ans = -1;
+   while(lo <= hi) {
+      int mid = (lo + hi) / 2;
+      if((long)r[mid].time + per <= (long)t) { ans = mid; lo = mid + 1; }
+      else hi = mid - 1;
+   }
+   return ans;
+}
+
+double CxSD(const double &c[], int k, int n) {
+   double s = 0.0, ss = 0.0, ref = c[k];
+   for(int i = k - n + 1; i <= k; i++) { double d = c[i] - ref; s += d; ss += d * d; }
+   double m = s / n, v = ss / n - m * m;
+   return (v > 0.0) ? MathSqrt(v) : 0.0;
+}
+
+// High / Low / Close ของวันเทรดก่อนวัน day จาก r[0..e] (ต้องได้ครบทั้งวัน)
+bool PrevDayHLC(const MqlRates &r[], int e, datetime day, double &h, double &l, double &c) {
+   int p = e;
+   while(p >= 0 && r[p].time >= day) p--;
+   if(p < 0) return false;
+   datetime pd = DayStart(r[p].time);
+   c = r[p].close; h = r[p].high; l = r[p].low;
+   for(p--; p >= 0 && r[p].time >= pd; p--) { h = MathMax(h, r[p].high); l = MathMin(l, r[p].low); }
+   return (p >= 0);
+}
+
+// ค่าระดับแท่งจากแท่งที่ปิดแล้ว r[0..e], cur_day = วันของแท่งที่กำลังเทรด
+bool CtxBarCompute(const MqlRates &r[], int e, datetime cur_day, CtxBar &cb) {
+   ZeroMemory(cb);
+   cb.sq_ago = -1;
+   int n  = InpZ_Period, kp = InpKC_Period, fp = InpFastPeriod;
+   int s  = MathMax(1, e - (3 * InpEMALong + 200));   // หน้าต่างให้ EMA ยาวนิ่ง
+   int w  = e - s + 1;
+   if(e >= ArraySize(r) || w < MathMax(n, MathMax(kp, 2 * fp)) + 110) return false;   // HMA ต้องย้อน fp + √fp แท่ง
+
+   double c[], ema[], atr[];
+   ArrayResize(c, w); ArrayResize(ema, w); ArrayResize(atr, w);
+   double a_k = 2.0 / (kp + 1.0), a_l = 2.0 / (InpEMALong + 1.0), a_f = 2.0 / (fp + 1.0);
+   double el = 0.0, ef = 0.0;
+   for(int k = 0; k < w; k++) {
+      int    i  = s + k;
+      double tr = MathMax(r[i].high, r[i - 1].close) - MathMin(r[i].low, r[i - 1].close);
+      c[k] = r[i].close;
+      if(k == 0) { ema[k] = c[k]; atr[k] = tr; el = c[k]; ef = c[k]; continue; }
+      ema[k] = c[k] * a_k + ema[k - 1] * (1.0 - a_k);
+      atr[k] = (atr[k - 1] * (kp - 1) + tr) / kp;   // Wilder
+      el     = c[k] * a_l + el * (1.0 - a_l);
+      ef     = c[k] * a_f + ef * (1.0 - a_f);
+   }
+   int last = w - 1;
+   cb.ema = ema[last]; cb.atr = atr[last]; cb.ema_long = el;
+
+   // Squeeze: Bollinger (SMA ± m·SD) แคบกว่า Keltner (EMA ± k·ATR)
+   for(int jj = 0; jj < 100 && last - jj >= n - 1; jj++) {
+      int    kk = last - jj;
+      double rt = (atr[kk] > 0.0) ? (InpSqueezeBB_Mult * CxSD(c, kk, n)) / (InpKC_Mult * atr[kk]) : 0.0;
+      if(jj == 0) cb.bbkc = rt;
+      if(rt > 0.0 && rt < 1.0) { cb.sq_ago = jj; break; }
+   }
+
+   // พัดเส้น 7 เส้นบน TF ของ Z
+   double sd    = CxSD(c, last, n);
+   double mainv = LnSMA(c, last, n);
+   double fast[6];
+   fast[0] = ef;
+   fast[1] = LnWMA(c, last, fp);
+   fast[2] = LnHMA(c, last, fp);
+   fast[3] = LnLSMA(c, last, fp);
+   fast[4] = LnALMA(c, last, fp);
+   fast[5] = LnKinematic(c, last);
+   double hi = mainv, lo = mainv;
+   int    ord = 0;
+   for(int L = 0; L < 6; L++) {
+      hi = MathMax(hi, fast[L]);
+      lo = MathMin(lo, fast[L]);
+      if(fast[L] > mainv) ord++;
+      else if(fast[L] < mainv) ord--;
+   }
+   if(sd > 0.0) { cb.fan_ok = true; cb.fan_w = (hi - lo) / sd; cb.fan_ord = ord; }
+
+   cb.pd_ok = PrevDayHLC(r, e, cur_day, cb.pdh, cb.pdl, cb.pdc);
+   cb.ok = true;
+   return true;
+}
+
+// ค่าบริบท ณ ราคา price (vv / v1 / v2 = ผลรวม VWAP ของวันนี้)
+void CtxFill(CtxFeat &f, double price, const CtxBar &cb, const ZCache &hz, double vv, double v1, double v2) {
+   ZeroMemory(f);
+   f.k_sq_ago = -1;
+   double zr, zs, fit, sig, mn, ssd;
+   bool   fl;
+   if(ZAtPrice(hz, price, zr, zs, fit, sig, fl, mn, ssd)) {
+      f.h_ok = true; f.h_zr = zr; f.h_zs = zs;
+      f.h_slope = (sig > 0.0) ? SlopeAtPrice(hz, price) / sig : 0.0;
+   }
+   if(vv > 0.0) {
+      f.v_ok = true;
+      f.v_px = v1 / vv;
+      double vr = v2 / vv - f.v_px * f.v_px;
+      f.v_sd   = (vr > 0.0) ? MathSqrt(vr) : 0.0;
+      f.v_dist = (f.v_sd > 0.0) ? (price - f.v_px) / f.v_sd : 0.0;
+   }
+   if(cb.ok && cb.atr > 0.0) {
+      f.k_ok = true; f.k_pos = (price - cb.ema) / cb.atr; f.k_bbkc = cb.bbkc; f.k_sq_ago = cb.sq_ago;
+   }
+   if(cb.ok) { f.e_ok = true; f.e_pts = PriceToPts(price - cb.ema_long); }
+   if(cb.ok && cb.pd_ok) {
+      f.p_ok = true;
+      f.p_h  = PriceToPts(price - cb.pdh);
+      f.p_l  = PriceToPts(price - cb.pdl);
+      f.p_c  = PriceToPts(price - cb.pdc);
+   }
+   f.r_pts  = PriceToPts(price - MathRound(price / InpRoundStep)  * InpRoundStep);
+   f.rm_pts = PriceToPts(price - MathRound(price / InpRoundMajor) * InpRoundMajor);
+   if(cb.ok && cb.fan_ok) { f.f_ok = true; f.f_w = cb.fan_w; f.f_ord = cb.fan_ord; }
+}
+
+string CtxText(const CtxFeat &f) {
+   string s = f.h_ok ? StringFormat("%s Z R %+.2f / S %+.2f ชัน %+.2fσ", HTFName(), f.h_zr, f.h_zs, f.h_slope) : HTFName() + " Z -";
+   s += f.v_ok ? StringFormat(" | VWAP %+.2fσ (σ %.0f)", f.v_dist, PriceToPts(f.v_sd)) : " | VWAP -";
+   if(f.k_ok)
+      s += StringFormat(" | KC %+.2f ATR, BB/KC %.2f%s", f.k_pos, f.k_bbkc,
+                        (f.k_sq_ago == 0 ? " 🔒Squeeze" : (f.k_sq_ago > 0 ? StringFormat(" (Squeeze %d แท่งก่อน)", f.k_sq_ago) : "")));
+   if(f.e_ok) s += StringFormat(" | EMA%d %+.0f", InpEMALong, f.e_pts);
+   if(f.p_ok) s += StringFormat(" | PDH %+.0f PDL %+.0f PDC %+.0f", f.p_h, f.p_l, f.p_c);
+   s += StringFormat(" | เลขกลม %+.0f / %+.0f", f.r_pts, f.rm_pts);
+   if(f.f_ok) s += StringFormat(" | พัด %.1fσ (%+d)", f.f_w, f.f_ord);
+   return s;
+}
+
+//--- EA จริง: อัปเดตแคช (เฉพาะเมื่อขึ้นแท่งใหม่ของแต่ละ TF) ---
+void CtxLiveHTF() {
+   datetime h0 = iTime(_Symbol, InpCtxHTF, 0);
+   if(h0 == 0 || h0 == g_hz_bar) return;
+   int    n = InpZ_Period;
+   double c[];
+   if(CopyClose(_Symbol, InpCtxHTF, 1, n, c) != n) return;
+   BuildZCache(c, g_hzc);
+   g_hz_bar = h0;
+}
+
+void CtxLiveVWAP() {
+   datetime m0 = iTime(_Symbol, PERIOD_M1, 0);
+   if(m0 == 0 || m0 == g_vw_m1) return;
+   MqlRates m[];
+   int got = CopyRates(_Symbol, PERIOD_M1, DayStart(m0), (datetime)(m0 - 1), m);   // แท่ง M1 ที่ปิดแล้วของวันนี้
+   if(got < 0) return;
+   g_vw_v = 0.0; g_vw_1 = 0.0; g_vw_2 = 0.0;
+   for(int i = 0; i < got; i++) {
+      double tp = (m[i].high + m[i].low + m[i].close) / 3.0, v = (double)m[i].tick_volume;
+      g_vw_v += v; g_vw_1 += v * tp; g_vw_2 += v * tp * tp;
+   }
+   g_vw_m1 = m0;
+}
+
+// true = ขึ้นแท่งใหม่ (TF ของ Z) และโหลดแท่งชุดใหม่แล้ว
+bool CtxLiveBar() {
+   datetime t0 = CurrentZBarTime();
+   if(t0 == 0 || t0 == g_cb_bar) return false;
+   int need = 3 * InpEMALong + 320 + InpCtxBars;
+   int got  = CopyRates(_Symbol, InpZ_Timeframe, 0, need, g_cxr);
+   if(got < 3 || g_cxr[got - 1].time != t0) return false;
+   CtxBarCompute(g_cxr, got - 2, DayStart(t0), g_cb);
+   g_cb_bar = t0;
+   return true;
+}
+
+//--- วาดเส้นบริบท (ช่วงเส้นต่อแท่ง ตั้งชื่อตามเวลาแท่ง เหมือนเส้น 7 เส้น) ---
+bool CxShown(int k) {
+   if(k <= 2) return InpShowKeltner;
+   if(k == 3) return InpShowEMALong;
+   if(k <= 8) return InpShowVWAP;
+   return InpShowHTFZ;
+}
+
+color CxColor(int k) {
+   if(k <= 2) return InpClrKeltner;
+   if(k == 3) return InpClrEMALong;
+   if(k == 4) return InpClrVWAP;
+   if(k <= 8) return InpClrVWAPBand;
+   return InpClrHTF;
+}
+
+string CxName(int k, datetime t) { return OBJ_PREFIX + "CX" + IntegerToString(k) + "_" + IntegerToString((long)t); }
+
+void CxSegment(int k, int j1) {
+   int    j0 = j1 - 1;
+   string nm = CxName(k, g_cxt[j1]);
+   double v0 = g_cxv[j0][k], v1 = g_cxv[j1][k];
+   bool   skip = !CxShown(k) || v0 <= 0.0 || v1 <= 0.0 ||
+                 (k >= 4 && k <= 8 && DayStart(g_cxt[j0]) != DayStart(g_cxt[j1]));   // VWAP เริ่มใหม่ทุกวัน
+   if(skip) { if(ObjectFind(0, nm) >= 0) ObjectDelete(0, nm); return; }
+   if(ObjectFind(0, nm) < 0) {
+      if(!ObjectCreate(0, nm, OBJ_TREND, 0, g_cxt[j0], v0, g_cxt[j1], v1)) return;
+      ObjectSetInteger(0, nm, OBJPROP_COLOR, CxColor(k));
+      ObjectSetInteger(0, nm, OBJPROP_WIDTH, CX_WIDTH[k]);
+      ObjectSetInteger(0, nm, OBJPROP_STYLE, CX_STYLE[k]);
+      ObjectSetInteger(0, nm, OBJPROP_RAY_RIGHT, false);
+      ObjectSetInteger(0, nm, OBJPROP_RAY_LEFT, false);
+      ObjectSetInteger(0, nm, OBJPROP_BACK, true);
+      ObjectSetInteger(0, nm, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, nm, OBJPROP_HIDDEN, true);
+      ObjectSetString(0,  nm, OBJPROP_TOOLTIP, CX_LABEL[k] + (k >= 9 ? " (" + HTFName() + ")" : ""));
+      return;
+   }
+   ObjectMove(0, nm, 0, g_cxt[j0], v0);
+   ObjectMove(0, nm, 1, g_cxt[j1], v1);
+}
+
+// ค่าเส้น TF ใหญ่ ณ ราคา price → g_cxv[j][9..11]
+void CxSetHTF(int j, const ZCache &hz, double price) {
+   double zr, zs, fit, sig, mn, ssd;
+   bool   fl;
+   if(!ZAtPrice(hz, price, zr, zs, fit, sig, fl, mn, ssd)) return;
+   double ctr = hz.ref + fit;
+   g_cxv[j][9]  = ctr;
+   g_cxv[j][10] = ctr + InpT1_Z * sig;
+   g_cxv[j][11] = ctr - InpT1_Z * sig;
+}
+
+void CxSetVWAP(int j, double vv, double v1, double v2) {
+   if(vv <= 0.0) return;
+   double vw = v1 / vv, vr = v2 / vv - vw * vw, sd = (vr > 0.0) ? MathSqrt(vr) : 0.0;
+   g_cxv[j][4] = vw;
+   g_cxv[j][5] = vw + sd;
+   g_cxv[j][6] = vw - sd;
+   g_cxv[j][7] = vw + 2.0 * sd;
+   g_cxv[j][8] = vw - 2.0 * sd;
+}
+
+// ขึ้นแท่งใหม่: คำนวณเส้นทั้งหน้าต่างจาก g_cxr (ค่า ณ ปิดแท่ง เหมือน Indicator) แล้ววาด / ลบช่วงที่เก่าเกิน
+void CtxBuildSeries() {
+   int got = ArraySize(g_cxr);
+   int cnt = MathMin(InpCtxBars + 1, got - 2);
+   if(cnt < 2) { g_cx_cnt = 0; return; }
+   int    first = got - cnt;
+   int    kp    = InpKC_Period, n = InpZ_Period;
+   double a_k   = 2.0 / (kp + 1.0), a_l = 2.0 / (InpEMALong + 1.0);
+   long   per   = PeriodSeconds(InpZ_Timeframe), hper = PeriodSeconds(InpCtxHTF);
+   ArrayResize(g_cxv, cnt);
+   ArrayResize(g_cxt, cnt);
+
+   MqlRates h[];
+   int hgot = CopyRates(_Symbol, InpCtxHTF, 0, (int)(cnt * per / MathMax(60, hper)) + n + 5, h);
+   MqlRates m[];
+   int mgot = CopyRates(_Symbol, PERIOD_M1, DayStart(g_cxr[first].time), (datetime)(g_cxr[got - 1].time - 1), m);
+   int      mi = 0, hk = -1;
+   datetime vday = 0;
+   double   vv = 0.0, v1 = 0.0, v2 = 0.0;
+   ZCache   hz;
+   hz.ok = false;
+
+   double ema = g_cxr[0].close, atr = g_cxr[0].high - g_cxr[0].low, el = g_cxr[0].close;
+   for(int i = 1; i < got; i++) {
+      double tr = MathMax(g_cxr[i].high, g_cxr[i - 1].close) - MathMin(g_cxr[i].low, g_cxr[i - 1].close);
+      ema = g_cxr[i].close * a_k + ema * (1.0 - a_k);
+      atr = (atr * (kp - 1) + tr) / kp;
+      el  = g_cxr[i].close * a_l + el * (1.0 - a_l);
+      if(i == got - 2) { g_cx_pema = ema; g_cx_patr = atr; g_cx_pel = el; g_cx_pclose = g_cxr[i].close; }
+      if(i < first) continue;
+
+      int j = i - first;
+      g_cxt[j] = g_cxr[i].time;
+      for(int k = 0; k < CX_N; k++) g_cxv[j][k] = 0.0;
+      g_cxv[j][0] = ema;
+      g_cxv[j][1] = ema + InpKC_Mult * atr;
+      g_cxv[j][2] = ema - InpKC_Mult * atr;
+      g_cxv[j][3] = el;
+
+      // VWAP ณ ปลายแท่ง (แท่ง M1 ของวันเดียวกันที่จบภายในแท่งนี้)
+      datetime bend = g_cxr[i].time + (datetime)per;
+      while(mi < mgot && m[mi].time < bend) {
+         datetime d = DayStart(m[mi].time);
+         if(d != vday) { vday = d; vv = 0.0; v1 = 0.0; v2 = 0.0; }
+         double tp = (m[mi].high + m[mi].low + m[mi].close) / 3.0, v = (double)m[mi].tick_volume;
+         vv += v; v1 += v * tp; v2 += v * tp * tp;
+         mi++;
+      }
+      if(vday == DayStart(g_cxr[i].time)) CxSetVWAP(j, vv, v1, v2);
+
+      // TF ใหญ่: แท่งที่ปิดแล้ว ณ ต้นแท่งนี้ + ราคาปิดของแท่งนี้
+      int hx = (hgot > 0) ? LastClosedIdx(h, hgot, g_cxr[i].time, hper) : -1;
+      if(hx >= n - 1) {
+         if(hx != hk) {
+            double hc[];
+            ArrayResize(hc, n);
+            for(int q = 0; q < n; q++) hc[q] = h[hx - n + 1 + q].close;
+            BuildZCache(hc, hz);
+            hk = hx;
+         }
+         CxSetHTF(j, hz, g_cxr[i].close);
+      }
+   }
+   g_cx_cnt = cnt;
+
+   for(int j1 = 1; j1 < cnt; j1++) {
+      for(int k = 0; k < CX_N; k++) CxSegment(k, j1);
+      int nsg = ArraySize(g_cx_seg);
+      if(nsg == 0 || g_cx_seg[nsg - 1] < g_cxt[j1]) { ArrayResize(g_cx_seg, nsg + 1); g_cx_seg[nsg] = g_cxt[j1]; }
+   }
+   int ns = ArraySize(g_cx_seg), w = 0;   // ลบช่วงที่หลุดหน้าต่าง
+   for(int q = 0; q < ns; q++) {
+      if(g_cx_seg[q] < g_cxt[1]) {
+         for(int k = 0; k < CX_N; k++) ObjectDelete(0, CxName(k, g_cx_seg[q]));
+         continue;
+      }
+      g_cx_seg[w++] = g_cx_seg[q];
+   }
+   if(w != ns) ArrayResize(g_cx_seg, w);
+}
+
+// ระหว่างแท่ง: อัปเดตจุดของแท่งปัจจุบันด้วยราคาล่าสุด
+void CtxUpdateLast(double bid) {
+   int j = g_cx_cnt - 1;
+   if(j < 1 || g_cxt[j] != CurrentZBarTime()) return;
+   int    kp  = InpKC_Period;
+   double a_k = 2.0 / (kp + 1.0), a_l = 2.0 / (InpEMALong + 1.0);
+   double hi  = MathMax(g_bar0_hi, bid);
+   double lo  = (g_bar0_lo > 0.0) ? MathMin(g_bar0_lo, bid) : bid;
+   double tr  = MathMax(hi, g_cx_pclose) - MathMin(lo, g_cx_pclose);
+   double ema = bid * a_k + g_cx_pema * (1.0 - a_k);
+   double atr = (g_cx_patr * (kp - 1) + tr) / kp;
+   for(int k = 0; k < CX_N; k++) g_cxv[j][k] = 0.0;
+   g_cxv[j][0] = ema;
+   g_cxv[j][1] = ema + InpKC_Mult * atr;
+   g_cxv[j][2] = ema - InpKC_Mult * atr;
+   g_cxv[j][3] = bid * a_l + g_cx_pel * (1.0 - a_l);
+   if(DayStart(g_vw_m1) == DayStart(g_cxt[j])) CxSetVWAP(j, g_vw_v, g_vw_1, g_vw_2);
+   CxSetHTF(j, g_hzc, bid);
+   for(int k = 0; k < CX_N; k++) CxSegment(k, j);
+}
+
+// เส้นระดับ: H / L / C วันก่อน (ต่อวัน, วาดใหม่เมื่อขึ้นแท่งใหม่) + เลขกลม (วาดใหม่เมื่อราคาเปลี่ยนช่วง)
+void CxLevelLine(string nm, datetime t0, datetime t1, double price, color clr, ENUM_LINE_STYLE style, int width, string tip) {
+   if(ObjectFind(0, nm) < 0) {
+      if(t1 > t0) ObjectCreate(0, nm, OBJ_TREND, 0, t0, price, t1, price);
+      else        ObjectCreate(0, nm, OBJ_HLINE, 0, 0, price);
+      ObjectSetInteger(0, nm, OBJPROP_COLOR, clr);
+      ObjectSetInteger(0, nm, OBJPROP_STYLE, style);
+      ObjectSetInteger(0, nm, OBJPROP_WIDTH, width);
+      ObjectSetInteger(0, nm, OBJPROP_BACK, true);
+      ObjectSetInteger(0, nm, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, nm, OBJPROP_HIDDEN, true);
+      if(t1 > t0) { ObjectSetInteger(0, nm, OBJPROP_RAY_RIGHT, false); ObjectSetInteger(0, nm, OBJPROP_RAY_LEFT, false); }
+   }
+   ObjectSetString(0, nm, OBJPROP_TOOLTIP, tip);
+}
+
+void CtxDrawLevels(double bid, bool newbar) {
+   if(newbar) {
+      ObjectsDeleteAll(0, OBJ_PREFIX + "PD_");
+      if(InpShowPrevDay && g_cx_cnt > 0) {
+         int      got  = ArraySize(g_cxr);
+         datetime tend = g_cxt[g_cx_cnt - 1] + (datetime)PeriodSeconds(InpZ_Timeframe);
+         datetime prev = 0;
+         for(int j = 0; j < g_cx_cnt; j++) {
+            datetime d = DayStart(g_cxt[j]);
+            if(d == prev) continue;
+            prev = d;
+            double h, l, c;
+            if(!PrevDayHLC(g_cxr, got - 1, d, h, l, c)) continue;
+            datetime t0 = (d > g_cxt[0]) ? d : g_cxt[0];
+            datetime t1 = (d + (datetime)DAY_SEC < tend) ? d + (datetime)DAY_SEC : tend;
+            string   ds = TimeToString(d, TIME_DATE);
+            CxLevelLine(OBJ_PREFIX + "PD_H_" + ds, t0, t1, h, InpClrPrevDay, STYLE_SOLID, 1, "High วันก่อน (ใช้วันที่ " + ds + ") " + DoubleToString(h, _Digits));
+            CxLevelLine(OBJ_PREFIX + "PD_L_" + ds, t0, t1, l, InpClrPrevDay, STYLE_SOLID, 1, "Low วันก่อน (ใช้วันที่ " + ds + ") " + DoubleToString(l, _Digits));
+            CxLevelLine(OBJ_PREFIX + "PD_C_" + ds, t0, t1, c, InpClrPrevDay, STYLE_DOT,   1, "Close วันก่อน (ใช้วันที่ " + ds + ") " + DoubleToString(c, _Digits));
+         }
+      }
+   }
+   if(!InpShowRound) return;
+   double mid = MathRound(bid / InpRoundStep) * InpRoundStep;
+   if(mid == g_rn_mid && !newbar) return;
+   g_rn_mid = mid;
+   ObjectsDeleteAll(0, OBJ_PREFIX + "RN_");
+   for(int k = -5; k <= 5; k++) {
+      double lvl   = mid + k * InpRoundStep;
+      double q     = lvl / InpRoundMajor;
+      bool   major = (MathAbs(q - MathRound(q)) < 1e-6);
+      CxLevelLine(OBJ_PREFIX + "RN_" + DoubleToString(lvl, 2), 0, 0, lvl, major ? InpClrRoundMajor : InpClrRound,
+                  major ? STYLE_SOLID : STYLE_DOT, 1, (major ? "เลขกลมหลัก " : "เลขกลม ") + DoubleToString(lvl, 2));
+   }
+}
+
+// เรียกทุก 1 วินาที (เฉพาะตอนมีการแสดงผล): อัปเดตแคช → ค่าบริบทของราคาปัจจุบัน → วาด
+void CtxLiveStep(double bid) {
+   CtxLiveHTF();
+   CtxLiveVWAP();
+   bool newbar = CtxLiveBar();
+   bool vw_today = (DayStart(g_vw_m1) == DayStart(CurrentZBarTime()));
+   CtxFill(g_cx, bid, g_cb, g_hzc, vw_today ? g_vw_v : 0.0, g_vw_1, g_vw_2);
+   if(!InpShowCtx) return;
+   if(newbar) CtxBuildSeries();
+   CtxUpdateLast(bid);
+   CtxDrawLevels(bid, newbar);
 }
 
 //====================================================================
@@ -1659,6 +2163,7 @@ struct RTrade {
    double   zr, zs, ext_r, ext_s;
    double   mfe, mae;      // กำไรสูงสุด / ติดลบสูงสุดระหว่างถือ (ราคา)
    double   sl0;           // SL ตอนเปิดไม้ (ก่อนขยับโล่)
+   CtxFeat  cx;            // ค่าบริบทตอนเปิดไม้
    bool     activated;
    long     last_trail_sec;
    datetime force_close;
@@ -1702,6 +2207,14 @@ double     g_rp_hi        = 0.0;     // High / Low ของแท่งปั�
 double     g_rp_lo        = 0.0;
 WatchState g_rp_ws;
 WatchState g_rp_wb;
+CtxBar     g_rp_cb;                  // บริบทระดับแท่ง (แท่งที่ปิดแล้ว) ของแท่งที่กำลังเล่น
+ZCache     g_rp_hzc;                 // Z ของ TF ใหญ่
+MqlRates   g_rh[];                   // แท่ง TF ใหญ่
+datetime   g_rp_h_t       = 0;       // แท่ง TF ใหญ่ล่าสุดที่ใช้สร้างแคช
+datetime   g_rv_min = 0, g_rv_day = 0;   // VWAP: แท่ง M1 ที่สร้างจาก tick ที่เล่น / วันของผลรวม
+double     g_rv_h = 0.0, g_rv_l = 0.0, g_rv_c = 0.0, g_rv_v = 0.0, g_rv_1 = 0.0, g_rv_2 = 0.0;
+long       g_rv_n         = 0;
+int        g_rp_csv_rows  = -1;      // จำนวนไม้ที่เขียนลง CSV ล่าสุด
 double     g_rp_bid = 0.0, g_rp_ask = 0.0, g_rp_zr = 0.0, g_rp_zs = 0.0;
 long       g_rp_msc       = 0;
 bool       g_rp_have      = false;
@@ -1723,6 +2236,9 @@ void ReplayReset() {
    CoolReset(g_rp_cool);
    g_rp_b = -1; g_rp_bar_t = 0; g_rp_zc.ok = false; g_rp_bar_chg = false; g_rp_hi = 0.0; g_rp_lo = 0.0;
    WatchReset(g_rp_ws); WatchReset(g_rp_wb);
+   ZeroMemory(g_rp_cb); g_rp_hzc.ok = false; ArrayResize(g_rh, 0); g_rp_h_t = 0;
+   g_rv_min = 0; g_rv_day = 0; g_rv_n = 0; g_rv_v = 0.0; g_rv_1 = 0.0; g_rv_2 = 0.0;
+   g_rp_csv_rows = -1;
    g_rp_bid = 0.0; g_rp_ask = 0.0; g_rp_zr = 0.0; g_rp_zs = 0.0;
    g_rp_msc = 0; g_rp_have = false; g_rp_init = false; g_rp_caught = false;
    g_rp_cursor = 0; g_rp_retry = 0; g_rp_ticks = 0; g_rp_news_wait = 0;
@@ -1731,8 +2247,10 @@ void ReplayReset() {
 
 bool ReplayLoadRates() {
    int per_day = (int)(DAY_SEC / MathMax(60, PeriodSeconds(InpZ_Timeframe)));
-   int count   = (InpReplayDays + 4) * per_day + InpZ_Period + 10;
+   int count   = (InpReplayDays + 4) * per_day + InpZ_Period + 10 + 3 * InpEMALong + 260;   // + หน้าต่างให้ EMA ยาวนิ่ง
    int got = CopyRates(_Symbol, InpZ_Timeframe, 0, count, g_rr);
+   int hcnt = (int)((long)(InpReplayDays + 4) * DAY_SEC / MathMax(60, PeriodSeconds(InpCtxHTF))) + InpZ_Period + 10;
+   if(CopyRates(_Symbol, InpCtxHTF, 0, hcnt, g_rh) <= 0) ArrayResize(g_rh, 0);
    return (got > InpZ_Period + 3);
 }
 
@@ -1753,6 +2271,37 @@ void ReplayEnterBar(int b) {
       BuildZCache(c, g_rp_zc);
    }
    if(had) g_rp_bar_chg = true;
+
+   // บริบท: ค่าระดับแท่งจากแท่งที่ปิดแล้ว + Z ของ TF ใหญ่ (แท่งที่ปิดแล้ว ณ ต้นแท่งนี้)
+   if(b >= 1) CtxBarCompute(g_rr, b - 1, DayStart(g_rr[b].time), g_rp_cb);
+   else       ZeroMemory(g_rp_cb);
+   int hx = LastClosedIdx(g_rh, ArraySize(g_rh), g_rr[b].time, PeriodSeconds(InpCtxHTF));
+   if(hx < n - 1) g_rp_hzc.ok = false;
+   else if(g_rh[hx].time != g_rp_h_t) {
+      double hc[];
+      ArrayResize(hc, n);
+      for(int i = 0; i < n; i++) hc[i] = g_rh[hx - n + 1 + i].close;
+      BuildZCache(hc, g_rp_hzc);
+      g_rp_h_t = g_rh[hx].time;
+   }
+}
+
+// VWAP ใน Replay: สร้างแท่ง M1 จาก tick ที่เล่น (tick volume = จำนวน tick) → รวมเมื่อแท่ง M1 ปิด
+void ReplayVWAPTick(datetime t, double bid) {
+   datetime m = t - (datetime)((long)t % 60);
+   if(m != g_rv_min) {
+      if(g_rv_min != 0 && g_rv_n > 0) {
+         datetime d = DayStart(g_rv_min);
+         if(d != g_rv_day) { g_rv_day = d; g_rv_v = 0.0; g_rv_1 = 0.0; g_rv_2 = 0.0; }
+         double tp = (g_rv_h + g_rv_l + g_rv_c) / 3.0, v = (double)g_rv_n;
+         g_rv_v += v; g_rv_1 += v * tp; g_rv_2 += v * tp * tp;
+      }
+      g_rv_min = m; g_rv_h = bid; g_rv_l = bid; g_rv_n = 0;
+   }
+   g_rv_h = MathMax(g_rv_h, bid);
+   g_rv_l = MathMin(g_rv_l, bid);
+   g_rv_c = bid;
+   g_rv_n++;
 }
 
 bool ReplayBarFor(datetime t) {
@@ -1796,6 +2345,8 @@ int ReplayOpen(int dir, int stage, long msc, double price) {
    g_rt[i].ext_s    = 0.0;
    g_rt[i].mfe = 0.0; g_rt[i].mae = 0.0;
    g_rt[i].sl0      = g_rt[i].sl;
+   bool vw_today = (g_rv_day == DayStart((datetime)(msc / 1000)));
+   CtxFill(g_rt[i].cx, g_rp_bid, g_rp_cb, g_rp_hzc, vw_today ? g_rv_v : 0.0, g_rv_1, g_rv_2);
    g_rt[i].activated      = false;
    g_rt[i].last_trail_sec = 0;
    g_rt[i].force_close    = ForceCloseTimeAt((datetime)(msc / 1000));
@@ -1904,6 +2455,7 @@ void ReplayTick(const MqlTick &tk) {
    datetime t   = (datetime)(msc / 1000);
 
    ReplayTimeEvents(msc);                 // A) เหตุการณ์ตามเวลาด้วยราคาเดิม (ตัดเวลา / ยิงหลังครบเวลาเฝ้า)
+   ReplayVWAPTick(t, bid);
    if(!ReplayBarFor(t)) return;           // B) แท่งของ tick นี้
    if(g_rp_hi <= 0.0 || bid > g_rp_hi) g_rp_hi = bid;
    if(g_rp_lo <= 0.0 || bid < g_rp_lo) g_rp_lo = bid;
@@ -2006,6 +2558,7 @@ void DrawReplayTrade(int i) {
                                  TimeToString(t_in, TIME_DATE|TIME_SECONDS), g_rt[i].zr, g_rt[i].zs);
    tipText += StringFormat(" | สุดขั้วระหว่างเฝ้า R %+.2f / S %+.2f | ลึกสุด T%d", g_rt[i].ext_r, g_rt[i].ext_s, g_rt[i].max_tier);
    tipText += StringFormat("\nห่างปลายไส้ %.0f จุด | SL ตอนเข้า %s (ไส้ ± %.0f จุด)", gap, DoubleToString(g_rt[i].sl0, _Digits), SLBeyondPts(g_rt[i].stage));
+   tipText += "\n🔬 " + CtxText(g_rt[i].cx);
    if(!open)
       tipText += StringFormat("\nออก %s @ %s (%s) | %+.0f จุด | $%+.2f | ถือ %d วินาที",
                               ReplayReasonName(g_rt[i].reason), DoubleToString(g_rt[i].p_out, _Digits),
@@ -2093,6 +2646,8 @@ string ReplayStatsText() {
    else if(CoolActive(g_rp_cool, (datetime)(g_rp_msc / 1000))) tail = " | จำลองกำลังพัก";
    s += StringFormat("\n   T1 %d ไม้ ($%+.2f) | T2 %d ไม้ ($%+.2f) | T3 %d ไม้ ($%+.2f) | Cool down %d ครั้ง%s",
                      cnt[1], usd_st[1], cnt[2], usd_st[2], cnt[3], usd_st[3], ArraySize(g_rc), tail);
+   if(InpCtxCSV && g_rp_csv_rows >= 0)
+      s += StringFormat("\n   📄 CSV: MQL5\\Files\\%s (%d ไม้)", ReplayCSVName(), g_rp_csv_rows);
    return s;
 }
 
@@ -2108,7 +2663,7 @@ void ReplayStep() {
       if(!ReplayLoadRates()) { g_rp_status = "⏳ รอประวัติแท่ง"; return; }
       g_contract  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE);
       if(g_contract <= 0.0) g_contract = 100.0;
-      g_rp_cursor = ((long)TimeCurrent() - (long)InpReplayDays * DAY_SEC) * 1000;
+      g_rp_cursor = (long)DayStart((datetime)((long)TimeCurrent() - (long)InpReplayDays * DAY_SEC)) * 1000;   // เริ่มต้นวัน (VWAP ครบวัน)
       g_rp_init   = true;
    }
    long now_msc = (long)TimeCurrent() * 1000 + 999;
@@ -2140,6 +2695,57 @@ void ReplayStep() {
                  ? StringFormat("✅ ครบแล้ว + เดินต่อแบบสด (%I64d ticks)", g_rp_ticks)
                  : StringFormat("⏳ กำลังเล่นซ้ำ ถึง %s (%I64d ticks)", TimeToString((datetime)(g_rp_cursor / 1000), TIME_DATE|TIME_MINUTES), g_rp_ticks);
    ReplayDraw();
+   if(InpCtxCSV && g_rp_caught) {
+      int done = 0;
+      for(int i = 0; i < ArraySize(g_rt); i++) if(g_rt[i].reason != RX_OPEN) done++;
+      if(done != g_rp_csv_rows) ReplayWriteCSV(done);
+   }
+}
+
+string ReplayCSVName() { return "7LCEA_Context_" + _Symbol + ".csv"; }
+
+string ReplayReasonCode(int r) {
+   switch(r) {
+      case RX_TP:    return "TP";
+      case RX_SL:    return "SL";
+      case RX_CUT:   return "TIMECUT";
+      case RX_TRAIL: return "TRAIL";
+      case RX_WEEK:  return "WEEKCLOSE";
+      case RX_GIVE:  return "GIVEBACK";
+   }
+   return "OPEN";
+}
+
+string CsvNum(bool ok, double v, int digits) { return ok ? DoubleToString(v, digits) : ""; }
+
+// เขียนไม้จำลองที่ปิดแล้ว + ค่าบริบทตอนเปิดไม้ ลง MQL5/Files (เขียนใหม่ทั้งไฟล์เมื่อมีไม้ปิดเพิ่ม)
+void ReplayWriteCSV(int done) {
+   string fn = ReplayCSVName();
+   int h = FileOpen(fn, FILE_WRITE | FILE_TXT | FILE_ANSI);
+   if(h == INVALID_HANDLE) { PrintFormat("⚠️ เขียนไฟล์ %s ไม่สำเร็จ (error %d)", fn, GetLastError()); return; }
+   FileWriteString(h, "time_in,side,tier,lot,price_in,z_reg,z_sma,exit,hold_sec,pnl_pts,usd,mfe_pts,mae_pts," +
+                      "htf_zreg,htf_zsma,htf_slope_sig,vwap_dist_sig,vwap_sigma_pts,kc_pos_atr,bb_kc_ratio,squeeze_bars_ago," +
+                      "ema_long_dist_pts,pdh_dist_pts,pdl_dist_pts,pdc_dist_pts,round_dist_pts,round_major_dist_pts,fan_width_sig,fan_order\r\n");
+   for(int i = 0; i < ArraySize(g_rt); i++) {
+      if(g_rt[i].reason == RX_OPEN) continue;
+      string ln = StringFormat("%s,%s,%d,%.2f,%s,%.3f,%.3f,%s,%d,%.0f,%.2f,%.0f,%.0f,",
+                               TimeToString((datetime)(g_rt[i].msc_in / 1000), TIME_DATE|TIME_SECONDS), (g_rt[i].dir == -1 ? "SELL" : "BUY"),
+                               g_rt[i].stage, g_rt[i].lot, DoubleToString(g_rt[i].p_in, _Digits), g_rt[i].zr, g_rt[i].zs,
+                               ReplayReasonCode(g_rt[i].reason), (int)((g_rt[i].msc_out - g_rt[i].msc_in) / 1000),
+                               g_rt[i].pnl, g_rt[i].usd, PriceToPts(g_rt[i].mfe), PriceToPts(g_rt[i].mae));
+      CtxFeat f = g_rt[i].cx;
+      ln += CsvNum(f.h_ok, f.h_zr, 3) + "," + CsvNum(f.h_ok, f.h_zs, 3) + "," + CsvNum(f.h_ok, f.h_slope, 3) + ",";
+      ln += CsvNum(f.v_ok, f.v_dist, 3) + "," + CsvNum(f.v_ok, PriceToPts(f.v_sd), 0) + ",";
+      ln += CsvNum(f.k_ok, f.k_pos, 3) + "," + CsvNum(f.k_ok, f.k_bbkc, 3) + "," + (f.k_ok ? IntegerToString(f.k_sq_ago) : "") + ",";
+      ln += CsvNum(f.e_ok, f.e_pts, 0) + ",";
+      ln += CsvNum(f.p_ok, f.p_h, 0) + "," + CsvNum(f.p_ok, f.p_l, 0) + "," + CsvNum(f.p_ok, f.p_c, 0) + ",";
+      ln += DoubleToString(f.r_pts, 0) + "," + DoubleToString(f.rm_pts, 0) + ",";
+      ln += CsvNum(f.f_ok, f.f_w, 3) + "," + (f.f_ok ? IntegerToString(f.f_ord) : "") + "\r\n";
+      FileWriteString(h, ln);
+   }
+   FileClose(h);
+   if(g_rp_csv_rows < 0) PrintFormat("📄 บันทึกไม้จำลอง %d ไม้ + ค่าบริบท ลง MQL5\\Files\\%s (อัปเดตเมื่อมีไม้ปิดเพิ่ม)", done, fn);
+   g_rp_csv_rows = done;
 }
 
 //====================================================================
@@ -2397,10 +3003,11 @@ void UpdateDashboard(int ts, datetime now) {
    string news_str = NextNewsText(now);
 
    long   now_msc = MathMax(g_last_tick_msc, (long)now * 1000);
-   string msg = StringFormat("=== 📊 7-Lines Counter EA v12.00 (T1 Z>%.1f %d วิ / T2 Z>%.1f %d วิ / T3 Z>%.1f ทันที | SL ไส้ ± %.0f / T3 ± %.0f | คืนกำไร %.0f%%) ===\n",
+   string msg = StringFormat("=== 📊 7-Lines Counter EA v12.10 (T1 Z>%.1f %d วิ / T2 Z>%.1f %d วิ / T3 Z>%.1f ทันที | SL ไส้ ± %.0f / T3 ± %.0f | คืนกำไร %.0f%%) ===\n",
                              InpT1_Z, InpT1_Sec, InpT2_Z, InpT2_Sec, InpT3_Z, InpSLBeyond_Pts, InpSLBeyondT3_Pts, InpGiveback_Pct);
    msg += StringFormat("Z (%s, %d) : %s\n", EnumToString(InpZ_Timeframe), InpZ_Period, z_str);
    msg += StringFormat("Z แท่งที่เพิ่งปิด : R %+.2f / S %+.2f%s\n", g_prev_close_zr, g_prev_close_zs, (news_str == "" ? "" : " | " + news_str));
+   msg += "บริบท : " + CtxText(g_cx) + "\n";
    msg += "SELL : " + WatchText(g_wsell, true,  now_msc) + "\n";
    msg += "BUY  : " + WatchText(g_wbuy,  false, now_msc) + "\n";
    msg += StringFormat("ออเดอร์ : BUY %d / SELL %d | สเปรด %.0f / %.0f จุด\n",
@@ -2444,6 +3051,11 @@ int OnInit() {
    if(InpSigmaFloorMult < 0.0 || InpBarStartDelay_Sec < 0 || InpBarEndBlock_Sec < 0 ||
       InpBarStartDelay_Sec + InpBarEndBlock_Sec >= per || InpCoolT2_SL < 0 || InpCoolT3_SL < 0 || InpCooldown_Min < 1 || InpNewsBlock_Min < 0) {
       Print("❌ ค่าพื้นตัวหาร / เวลาต้น-ท้ายแท่ง / Cool down / ช่วงข่าว ไม่ถูกต้อง");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(InpCtxBars < 2 || InpCtxBars > 2000 || InpKC_Period < 2 || InpKC_Mult <= 0.0 || InpSqueezeBB_Mult <= 0.0 ||
+      InpEMALong < 2 || InpRoundStep <= 0.0 || InpRoundMajor < InpRoundStep || PeriodSeconds(InpCtxHTF) <= 0) {
+      Print("❌ ค่าเส้นบริบทไม่ถูกต้อง (จำนวนแท่ง 2-2000, Period ≥ 2, ตัวคูณ > 0, เลขกลมหลัก ≥ ระยะเลขกลม)");
       return(INIT_PARAMETERS_INCORRECT);
    }
    if(AccountInfoInteger(ACCOUNT_MARGIN_MODE) != ACCOUNT_MARGIN_MODE_RETAIL_HEDGING) {
@@ -2506,6 +3118,11 @@ int OnInit() {
    ArrayResize(g_peak_tk, 0);
    ArrayResize(g_peak_px, 0);
    g_gb_retry = 0;
+   ZeroMemory(g_cb); ZeroMemory(g_cx);
+   g_cb_bar = 0; g_hz_bar = 0; g_hzc.ok = false; g_vw_m1 = 0;
+   g_vw_v = 0.0; g_vw_1 = 0.0; g_vw_2 = 0.0;
+   g_cx_cnt = 0; g_rn_mid = 0.0;
+   ArrayResize(g_cx_seg, 0);
 
    RefreshNews(ServerNow());
    RestoreCoolFromHistory();   // ตัวนับ SL ของ T2 / T3 / เวลาพัก ไม่หายเมื่อรีสตาร์ท
@@ -2558,6 +3175,7 @@ void OnTimer() {
 
    // 3. อัปเดตการแสดงผล
    if(g_draw) {
+      if(bid > 0.0) CtxLiveStep(bid);
       UpdateZLines();
       UpdateLinesLive();
       UpdateBarZLabels();
