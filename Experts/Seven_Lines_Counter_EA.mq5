@@ -3,154 +3,35 @@
 //|      Fast Mean-Reversion Z-Score EA for XAUUSD (Indicator v8.82)  |
 //+------------------------------------------------------------------+
 //
-// 🆕 v11.20: ยิงเมื่อราคาถอยจากยอดไส้ของแท่ง ≥ 4,000 จุด (ผ่านการทดสอบ 3 ชุดข้อมูล) + ค่าเริ่มต้นตามไฟล์ล่าสุด
-//  • ครบเวลาเฝ้าของระดับแล้ว ถ้าราคายังถอยจาก High (SELL) / Low (BUY) ของแท่งไม่ถึง InpMinPull_Pts → เฝ้าต่อ
-//    ยิงเมื่อถอยถึงขณะที่ Z ยังอยู่เหนือ T1 (Z หลุด T1 = ยกเลิกตามเดิม) — ใช้ทั้ง EA จริงและ Tick Replay
-//  • ค่าเริ่มต้น: T1 = 2.40 ทั้งสองฝั่ง, ตัดจบ 1,500 วินาที
-//  • โหมดสังเกต: บันทึก OHLC ของแท่งสัญญาณ + ราคาปิดเทียบ P + Z ตอนปิด และเปิดไม้สมมติทั้งตามน้ำ / สวน ตอนเปิดแท่งถัดไป
+// 🎯 นิยามระบบ
+//  สวนกลับค่า Z ที่ผิดปกติ ซึ่ง "ควรดีดกลับอย่างรวดเร็ว" — ถ้าไม่ดีดกลับภายในเวลาที่กำหนด = สมมติฐานผิด → ออก
+//  (ประวัติการเปลี่ยนแปลงทุกเวอร์ชันอยู่ใน README.md)
 //
-// 🆕 v11.10: โหมดสังเกต "ให้ตลาดตอบเอง" ใน Tick Replay (ไม้สมมติ ไม่เทรดจริง)
-//  • สัญญาณ T1-T3 → ไม่เข้า จำพิกัด P → สังเกตถึงนาทีที่ 10 ของแท่งถัดไป
-//    ทะลุเกิน P ≥ 2,000 / 4,000 / 6,000 → ไม้ตามน้ำของแต่ละระยะ (SL = P ∓ 1,000)
-//    จบช่วงสังเกต → ไม้สวนกลับ (SL = ยอดไส้ตั้งแต่ต้นแท่งสัญญาณ ± 1,000) — บันทึกทุกครั้งเพื่อเทียบภายหลัง
-//  • มาร์ก ◆ ที่พิกัด P + สรุปบน Dashboard + MQL5/Files/7LCEA_Observe_<symbol>.csv — EA จริงยังเทรดแบบ v11.00
-//
-// 🆕 v11.00: ไม้วิกฤต 3 ระดับ + ยกเลิกเมื่อ Z หลุดเกณฑ์ + บันทึกปัจจัยลง CSV
-//  • ยกเลิกการเปลี่ยนเป็นตามน้ำ — ทุกไม้เป็นไม้สวนกลับ
-//  • ระดับของสัญญาณเดียวกัน (ยิงไม้เดียว): T1 Z ≥ 2.5 รอไม่มีค่าสุดขั้วใหม่ 3 วิ / T2 Z ≥ 3.0 รอ 1 วิ / T3 Z ≥ 3.5 ยิงทันที
-//    ระดับตาม Z ปัจจุบัน: ลึกขึ้น = รอสั้นลง, หลุดเกณฑ์ของระดับ = ลดระดับ, Z ตัวใดหลุดต่ำกว่า T1 → ยกเลิกแล้วหาสัญญาณใหม่
-//    Lot ตามระดับที่ยิง: T1 = Lot, T2 = +0.01, T3 = +0.02 | ตั้งเกณฑ์แยกฝั่ง SELL / BUY ได้ (ค่าเริ่มต้นเท่ากัน)
-//  • Tick Replay บันทึกปัจจัยของทุกไม้ (tooltip + MQL5/Files/7LCEA_Replay_<symbol>.csv):
-//    เวลาจากเปิดแท่งถึงแตะ T1, ระยะจากราคาเปิดแท่ง, Z ตอนปิด 3 แท่งก่อน, ความชันเส้นถดถอย (จุด/แท่ง และ ÷ σ),
-//    ทะลุ High/Low ของวันนี้ / วันก่อน, เวลา (เซิร์ฟเวอร์ / GMT), Z_reg − Z_SMA, MFE / MAE
-//
-// 🆕 v10.00: กลับมาใช้จับเวลา No new high/low + เปลี่ยนเป็นตามน้ำเมื่อ Z หลุดเกณฑ์ + Cool down
-//  • ยกเลิก: Limit C1 / ระบบเงา C1-C4 / ตามน้ำปกติ / เทรดตามข่าว (ช่วงข่าวแสดงบนกราฟอย่างเดียว ระบบเทรดตามปกติ)
-//  • Z ถึงเกณฑ์ (ตาม InpEntryLogic) → เฝ้าค่าสุดขั้ว Z_reg / Z_SMA, ค่าใหม่ = นับใหม่, ครบ InpNoNewExt_Sec วินาที → ยิง
-//    ระหว่างเฝ้า Z ตัวใด (ที่ใช้ตาม InpEntryLogic) หลุดต่ำกว่าเกณฑ์ − InpTrendFlipBuffer → จำไว้ว่าเป็น "ตามน้ำ" (ค้างไว้จนยิง)
-//    ครบเวลา: ไม่เคยหลุด → สวนกลับ (CNT) / เคยหลุด → ตามน้ำ (TRD) — Lot / TP / SL / ไล่จี้ / ตัด 60 วิ ชุดเดียวกัน
-//  • เปิดได้ครั้งละ 1 ไม้ (มีไม้ถืออยู่ = ไม่เฝ้า, ไม่เก็บสัญญาณเข้าคิว) / ขึ้นแท่งใหม่ล้างการเฝ้า
-//  • Cool down: ชน SL (ขาดทุน) ติดต่อกัน 3 ไม้ → หยุด 60 นาที; ไม้ที่ปิดแบบอื่นนับใหม่ — คืนค่าจากประวัติเมื่อรีสตาร์ท
-//  • (v10.10) SL ทุกไม้ = High (SELL) / Low (BUY) สูงสุดของแท่ง (TF ของ Z) ณ ตอนเปิดไม้ ± 1,000 จุด (เดิม SL คงที่ 2,500)
-//  • เส้นระดับราคาที่ Z ถึงเกณฑ์รายแท่ง (แสดงอย่างเดียว) + Tick Replay จำลองทั้งหมด
-//
-// 🆕 v9.00: C1 = Limit ที่ระดับ Z (คำนวณล่วงหน้า) + ระบบเงา C1-C4 + โหมดตามน้ำปกติ
-//  • ภายในแท่งเดียวกัน Z ขึ้นกับราคาปัจจุบันตัวเดียว (แท่งปิดถูกแคช) → ราคาที่ Z ถึงเกณฑ์คงที่ทั้งแท่ง
-//    หาด้วย bisection ครั้งเดียวตอนขึ้นแท่งใหม่ (ทั้งคู่: SELL = ระดับที่สูงกว่า / BUY = ระดับที่ต่ำกว่า)
-//  • ว่าง + เลยนาทีแรก + ไม่ใช่แท่งข่าว + สเปรดผ่าน → วาง Sell Limit / Buy Limit C1 ที่ระดับ Z พร้อมกัน (OCO)
-//    ราคาเลยระดับอยู่แล้ว → รอราคากลับเข้าฝั่งปกติก่อนค่อยวาง | ขึ้นแท่งใหม่ → ย้าย Limit ไประดับใหม่
-//  • ระบบเงา: ยึดราคา C1 ที่ fill → กาง C2 / C3 / C4 (ระยะจาก C1) — C2, C3 ไม่มีออเดอร์จริง จำแค่ระดับลึกสุดที่ราคาแตะ
-//    ไม้ชน SL → ราคาวกกลับมาแตะ C1 → สวนกลับที่ C1 ด้วย Lot ของระดับลึกสุด (R2 = Lot C2, R3 = Lot C3)
-//    เข้าซ้ำได้อีกเฉพาะเมื่อราคาไปถึงระดับที่ลึกกว่าเดิม | แตะ C4 → ตามน้ำทันที (Lot C4)
-//    ไม้ใดปิดแบบไม่ใช่ SL / C4 ปิด / รอเงาเกินอายุ → จบรอบ
-//  • ตามน้ำปกติ (เปิด/ปิดได้): Z_reg > +2.4 และ Z_SMA อยู่ใน 0.0–1.0 → BUY | Z_reg < −2.4 และ Z_SMA อยู่ใน −1.0–0.0 → SELL
-//  • ทีละรอบ: รอบสวน / ไม้ข่าว / ตามน้ำปกติ ใช้ล็อกเดียวกัน — ระหว่างมีรอบ ไม่มี Limit C1 และไม่รับสัญญาณใหม่
-//  • ยกเลิก: จับเวลา No new high/low, Limit ลูกโซ่ C2/C3 จริง
-//  • เส้นระดับ C1 รายแท่ง (ขั้นบันได) + บันไดเงาของแต่ละรอบใน Tick Replay
-//
-// 🆕 v3.00
-//  • Z แบบเส้นถดถอย (Regression Z): เส้นกลาง = เส้นถดถอยเชิงเส้น 20 แท่ง (รวมแท่งปัจจุบัน)
-//    ตัวหาร = StdDev ของส่วนเบี่ยงเบนรอบเส้นถดถอย (ไม่นับความชันเทรนด์เป็นความผันผวน)
-//    + พื้นขั้นต่ำของตัวหาร = InpSigmaFloorMult × StdDev ของการเปลี่ยนแปลงราคาต่อแท่ง (กัน Z พุ่งตอนเทรนด์เรียบ)
-//      (ไม่ใช้ StdDev แบบ SMA เป็นพื้น เพราะมันพองตามความชันเทรนด์ — จะกด Z กลับไปเหมือนเดิม)
-//    → แก้ปัญหา SMA ชันแล้ว Z ไม่แตะ (Z แบบ SMA ในเทรนด์เส้นตรงตันที่ ≈ 1.65 เสมอ)
-//  • ป้องกันข่าว: ตัวจับช็อก (ช่วงแกว่งแท่ง ≥ 3×ATR → งดถึง 30 นาทีหลังแท่งช็อกปิด)
-//    + กรองความต่อเนื่อง (แท่งที่เพิ่งปิดค้างในโซนสุดขั้วฝั่งเดียวกัน → ไม่สวน)
-//    + ปฏิทินข่าว USD ระดับ High (ตัวเลือก, ใช้ไม่ได้ใน Strategy Tester)
-//
-// 🆕 v8.00: ไม้ลูกโซ่ + โหมดตามน้ำแท่งข่าว
-//  • ตัวกรองเหลือแค่: เวลาตลาดเปิด/ปิดรายสัปดาห์ + เพดานสเปรด (เอาตัวจับช็อก / ความต่อเนื่อง / งดข่าว ออก)
-//  • เปิดไม้ได้หลังแท่ง (TF ของ Z) เปิดแล้ว InpBarStartDelay_Sec วินาที — นาทีแรกไม่เฝ้า Z
-//  • TP 30,000 / SL 2,500 / ไล่จี้เริ่ม 10,000 ห่าง 8,000 (ทุกไม้)
-//  • ไม้ลูกโซ่ (ช่วงปกติ): C1 = สวนกลับด้วย Z วิกฤต + จับเวลา 3 วิ (Lot เริ่มต้น)
-//      C2 = Limit สวนกลับ เลย SL ของ C1 ไป 1,000 จุด (Lot +0.01)
-//      C3 = Limit สวนกลับ เลย SL ของ C2 ไป 500 จุด (Lot +0.02)
-//      C4 = ถ้า C3 ชน SL → เปิดตามน้ำทันที (Lot +0.03)
-//      Limit หมดอายุเมื่อไม้ก่อนหน้าเริ่มไล่จี้ / ครบ 30 นาที / เข้าแท่งข่าว; ไม้ในชุดจบแบบไม่ใช่ SL → จบชุด
-//  • แท่งข่าว USD High: ปิดระบบสวนกลับเฉพาะแท่งนั้น → ตามน้ำเมื่อ |Z| ≥ 2.0 (1 ไม้/แท่ง, ไม่มี TP, ไม่ตัด 60 วิ, ใช้ไล่จี้)
-//  • Tick Replay จำลองทั้งลูกโซ่ (Limit fill / C4) และโหมดข่าว + สรุปผลเป็น $ ตาม Lot
-//
-// 🆕 v7.00: จับเวลา No new high/low + Tick Replay
-//  • ไม้แรก: Z ถึงเกณฑ์ (ตาม InpEntryLogic) → เริ่มเฝ้า: จำค่าสุดขั้วของ Z_reg และ Z_SMA
-//    ถ้า Z ตัวใดทำค่าสุดขั้วใหม่ (เกิน InpNoNewExtEps) → นับเวลาใหม่, ครบ InpNoNewExt_Sec วินาที → ยิง
-//    (ระหว่างนับ Z หลุดเกณฑ์ก็ยังยิง เพราะเคยผ่านแล้ว) — ขึ้นแท่งใหม่ปรับค่าอ้างอิงโดยไม่นับเป็นค่าใหม่
-//  • ตอนยิง ถ้าติดตัวกรอง (เวลา/ช็อก/ข่าว/ความต่อเนื่อง/สเปรด) → ทิ้งสัญญาณนั้น แล้วเริ่มเฝ้าใหม่ถ้า Z ยังถึงเกณฑ์
-//  • ยกเลิก: ไม้ซ้ำ, ไกยิง/ถอยกลับ 0.5, พักหลังชน SL, งดแท่งหลังตัด 60 วิ — เปิดได้ครั้งละ 1 ไม้
-//    ไม้ปิดแล้ว (TP/SL/ตัด/โล่) เปิดใหม่ได้ทันทีถ้าเงื่อนไขผ่าน
-//  • Tick Replay: ดึง tick จริงย้อนหลัง InpReplayDays วัน เดินด้วยกติกาเดียวกับ EA (เฝ้า/ตัวกรอง/TP/SL/โล่/ตัด 60 วิ/ปิดสุดสัปดาห์)
-//    → มาร์กไม้จำลองพร้อมผล + มาร์กสัญญาณที่ถูกตัวกรองทิ้ง + สรุปผลบน Dashboard, แล้วเดินต่อแบบสดทุกวินาที
-//  • ป้าย Z บนแท่งตั้งได้ถึง 20,000 แท่ง (ย้อนหลังคำนวณครั้งเดียว + ต่อเฉพาะแท่งใหม่)
-//
-// 🆕 v6.10: ย้อนหลังบนกราฟ (จุดเข้าจำลองจาก OHLC ถูกแทนด้วย Tick Replay ใน v7.00)
-//  • จุดเข้าไม้แรก "จำลอง" ย้อนหลัง (ประมาณจาก OHLC ของ TF ของ Z): ถึงเกณฑ์ตามเงื่อนไข + ไกยิง (ต้องถอยกลับก่อน)
-//    + กรองความต่อเนื่อง + ตัวจับช็อก + เวลาตลาด — ราคาเข้าหาด้วย bisection หาราคาแรกที่ Z ถึงเกณฑ์
-//    (ไม่จำลองไม้ซ้ำ / พักหลัง SL / ตัด 60 วินาที / เพดานไม้ เพราะต้องรู้ลำดับราคาในแท่ง)
-//  • ช่วงข่าวย้อนหลัง: เส้นแนวตั้งเวลาข่าว + แถบช่วงงดเทรด (ก่อน/หลัง) จากปฏิทิน MT5 (ใช้ไม่ได้ใน Tester)
-//
-// 🆕 v6.00: ไม้ซ้ำแบบ Double-tap (แทนการนับเวลา 10 วินาที) — ยกเลิกใน v7.00
-//  • หลังเปิดไม้ ต้องเห็น "เริ่มดีด" ก่อน: Z ถอยจากจุดสุดขั้ว ≥ InpReEntryRetreatZ
-//  • แล้ว "ถูกกระชากกลับ": Z ถึงเกณฑ์อีกครั้ง (ข้ามกลับจากใต้เกณฑ์ หรือดันกลับ ≥ InpReEntryRetreatZ จากจุดต่ำสุดหลังดีด)
-//  • ต้องอยู่ในแท่ง (TF ของ Z) เดียวกับไม้แรก, ราคาไม่แย่กว่าไม้ก่อน (+ InpReEntryMinDist_Pts),
-//    ไม้ซ้ำไม่เกิน InpReEntryMax ต่อชุด
-//  • ชุดไม้จบทันทีเมื่อไม้ในชุดโดนตัด 60 วินาทีหรือชน SL ขาดทุน (สมมติฐานดีดกลับล้ม) / หรือขึ้นแท่งใหม่
-//
-// 🆕 v5.10: มาร์กจุดเปิดไม้บนกราฟ
-//  • ลูกศร ณ ราคาเปิดไม้ + เส้นประแนวตั้งถึงปลายไส้ของแท่ง (TF ของ Z) + ระยะห่างเป็นจุด
-//    SELL วัดถึง High / BUY วัดถึง Low — แท่งที่ยังไม่ปิดอัปเดตทุก 1 วินาที
-//  • ดึงจาก Deal History ของ EA (Magic) ย้อนหลังเท่าช่วงป้าย Z + ไม้ใหม่ผ่าน OnTradeTransaction
-//
-// 🆕 v5.00: ตรรกะเข้าไม้ใหม่ + วาดย้อนหลังแบบเบา
-//  • ไม้แรก: Z_reg และ Z_SMA ถึงเกณฑ์ทั้งคู่ (ตาม InpEntryLogic) → ยิงทันที ไม่รอ Z ย่อ
-//  • ไม้ซ้ำ: ทุก 10 วินาทีหลังไม้ล่าสุด ถ้า Z ยังถึงเกณฑ์ (v6.00 แทนด้วย Double-tap)
-//    + ตัวเลือก: ไม้ซ้ำต้องได้ราคาดีกว่าไม้ก่อน InpReEntryMinDist_Pts จุด
-//  • ชุดไม้จบเมื่อ Z หลุดเกณฑ์ → ชุดใหม่ต้องรอ Z ถอยกลับ ReArm ก่อน
-//  • เส้น 7 เส้นตั้งชื่อช่วงเส้นตามเวลาแท่ง: ขึ้นแท่งใหม่สร้างแค่ช่วงใหม่ + ลบช่วงที่หลุดหน้าต่าง (ภาระคงที่)
-//  • ป้าย Z บนแท่งค่าเริ่มต้น 2,000 แท่ง
-//
-// 🆕 v4.30: Z แบบ SMA20 เทียบกับ Z แบบเส้นถดถอย
-//  • Z_SMA = (Bid − SMA20) / StdDev20 (รวมแท่งปัจจุบัน แบบเดียวกับ v1-v2) คำนวณคู่กับ Z_reg ทุก Tick
-//  • (v5.00 แทนด้วย InpEntryLogic: ทั้งคู่ / Regression / SMA)
-//  • เส้นแนวนอนชุด SMA (กลาง / SELL / BUY) แยกสีจากชุด Regression
-//  • ป้าย Z สดและป้ายบนแท่งแสดงทั้ง R (Regression) และ S (SMA)
-//    ป้ายบนแท่งขึ้นเมื่อตัวใดตัวหนึ่งถึงเกณฑ์ — สีเต็มถ้าตัวที่ใช้เทรดถึง, สีเทาถ้าถึงแค่ตัวเทียบ
-//
-// 🆕 v4.20
-//  • ตั้งสีเส้น / ป้ายทุกอย่างได้เองจาก Input (กลุ่ม 8)
-//  • ป้ายค่า Z บนทุกแท่ง (TF ของ Z) ที่ Z ถึงเกณฑ์: เหนือแท่ง = Z ที่ราคา High (≥ +SellZ),
-//    ใต้แท่ง = Z ที่ราคา Low (≤ −BuyZ) — คำนวณแบบเดียวกับ Z สด (ราคาปิด n−1 แท่งก่อนหน้า + ราคาสุดขั้วของแท่ง)
-//    ย้อนหลังคำนวณครั้งเดียวตอนเริ่ม, แท่งปัจจุบันอัปเดตทุก 1 วินาที, ขึ้นแท่งใหม่ยืนยันค่าจริงของแท่งที่ปิด
-//
-// 🆕 v4.10: แก้การแสดงผล
-//  • ป้าย Z สดเปลี่ยนเป็น OBJ_LABEL ติดขอบขวากราฟที่ความสูงของราคาปัจจุบัน (เดิมวางไว้ในอนาคต
-//    2 แท่ง ซึ่งมองไม่เห็นถ้าไม่ได้เปิด Chart shift) + ตามการเลื่อน/ซูมกราฟผ่าน OnChartEvent
-//  • สั่ง ChartRedraw ทุก 1 วินาที (วัตถุแสดงผลแม้ไม่มี Tick เข้า) + รายงานสถานะการวาดเส้น 7 เส้นบน Dashboard/Log
-//
-// 🆕 v4.00: รวม Indicator 7 เส้นเข้ามาใน EA (ไฟล์เดียวจบ ไม่ต้องพึ่ง Seven_Lines_Exhaustion_Ind.ex5)
-//  • คำนวณเส้น Main(SMA), L1 EMA, L2 LWMA, L3 HMA, L4 LSMA, L5 ALMA, L6 Kinematic บน TF ของกราฟ
-//  • วาดเป็นเส้น object ย้อนหลัง InpLinesBars แท่ง (v5.00: แตะ object เฉพาะช่วงที่เปลี่ยน)
-//    ระหว่างแท่งขยับแค่ช่วงเส้นของแท่งปัจจุบันทุก 1 วินาที → CPU ต่ำ
-//
-// 🆕 v3.10: ป้ายค่า Z สด ณ ราคาปัจจุบัน (ลอยข้างแท่งล่าสุดที่ระดับ Bid, เปลี่ยนสีตามโซน)
-//
-// 🎯 นิยามระบบ (v2.00)
-//  สวนกลับค่าที่ผิดปกติ (Z ≥ +2.5 / Z ≤ −3.0) ที่ "ควรดีดกลับอย่างรวดเร็ว"
-//  ถ้าไม่ดีดกลับภายในเวลาที่กำหนด = สมมติฐานผิด → ออกทันที
+// 📐 Z-Score (TF ของ Z, 20 แท่ง, รวมแท่งปัจจุบันที่ราคา Bid)
+//  • Z_reg = (ราคา − เส้นถดถอยเชิงเส้น) / max(StdDev รอบเส้นถดถอย, 0.5 × StdDev ของส่วนต่างราคาต่อแท่ง)
+//  • Z_SMA = (ราคา − SMA20) / StdDev20 — เงื่อนไขเข้าไม้ใช้ทั้งคู่ / ตัวเดียว ตาม InpEntryLogic
 //
 // 📋 ตรรกะการเข้าไม้ (v11.20) — ครั้งละ 1 ไม้, สวนกลับอย่างเดียว
-//  ว่าง + เลยนาทีแรก + ไม่ติด Cool down ──(Z ถึง T1)──► เฝ้าค่าสุดขั้ว ──► ยิงเมื่อไม่มีค่าใหม่ครบเวลาของระดับ
-//     T1 Z ≥ 2.4 → 3 วิ | T2 Z ≥ 3.0 → 1 วิ | T3 Z ≥ 3.5 → ทันที | Z ตัวใดหลุดต่ำกว่า T1 → ยกเลิก
-//     (v11.20) ครบเวลาแล้วต้องถอยจากยอดไส้ของแท่ง ≥ 4,000 จุดก่อนยิง (ยังไม่ถึง = เฝ้าต่อ)
-//  • ตัวกรอง: เวลาตลาด + สเปรด | ชน SL ติดต่อกัน 3 ไม้ → พัก 1 ชม.
+//  ว่าง + เลยนาทีแรกของแท่ง + ไม่ติด Cool down ──(Z ถึง T1)──► เฝ้าค่าสุดขั้วของ Z_reg / Z_SMA
+//     ยิงเมื่อไม่มีค่าสุดขั้วใหม่ครบเวลาของระดับ: T1 Z ≥ 2.4 → 3 วิ | T2 Z ≥ 3.0 → 1 วิ | T3 Z ≥ 3.5 → ทันที
+//     ระดับตาม Z ปัจจุบัน (หลุดเกณฑ์ของระดับ = ลดระดับ), Z ตัวใดหลุดต่ำกว่า T1 → ยกเลิกแล้วหาสัญญาณใหม่
+//     ครบเวลาแล้วต้องถอยจากยอดไส้ของแท่ง (High: SELL / Low: BUY) ≥ 4,000 จุดก่อนยิง (ยังไม่ถึง = เฝ้าต่อ)
+//  • Lot ตามระดับ: T1 = Lot, T2 = +0.01, T3 = +0.02
+//  • ตัวกรอง: เวลาตลาด + สเปรด | ชน SL ติดต่อกัน 3 ไม้ → พัก 1 ชม. (คืนค่าจากประวัติเมื่อรีสตาร์ท)
+//
 // 📋 ตรรกะการจัดการไม้
-//  • TP / SL คงที่ตั้งแต่เปิดไม้
-//  • ภายใน QuickWindow วินาทีแรก ตรวจทุก 1 วินาที: กำไรถึงจุดเริ่มไล่จี้ → เปิดระบบไล่จี้ทันที
-//  • ครบ QuickWindow แล้วระบบไล่จี้ยังไม่ทำงาน → ตัดจบ
+//  • SL = High (SELL) / Low (BUY) ของแท่ง ณ ตอนเปิดไม้ ± 1,000 จุด, TP 30,000 จุด
+//  • ภายใน QuickWindow วินาทีแรก: กำไรถึงจุดเริ่มไล่จี้ → เปิดระบบไล่จี้ทันที, ครบเวลาแล้วยังไม่ถึง → ตัดจบ
 //  • หลังเปิดระบบไล่จี้ ขยับโล่ทุก TrailInterval วินาที (ทางเดียว)
 //  • ห้ามเข้า 1 ชม.แรกหลังตลาดเปิดสัปดาห์ / ปิดทุกไม้ 30 นาทีก่อนตลาดปิดสัปดาห์
 //
+// 🧪 Tick Replay (บนกราฟ, ไม่ใช่ Strategy Tester)
+//  • เล่นซ้ำ tick จริงย้อนหลังด้วยกติกาเดียวกับ EA + บันทึกปัจจัยของทุกไม้ลง MQL5/Files/7LCEA_Replay_<symbol>.csv
+//  • โหมดสังเกต "ให้ตลาดตอบเอง" (ไม้สมมติ) → MQL5/Files/7LCEA_Observe_<symbol>.csv
+//
 // ⚡ การประหยัด CPU
-//  • Z: แคช Σy, Σxy, Σy² ของแท่งที่ปิดแล้ว + ATR คำนวณเฉพาะตอนขึ้นแท่งใหม่ (ต่อ Tick ไม่กี่บรรทัดคณิต)
-//  • จัดการไม้ / Dashboard / เส้น ทำบน OnTimer 1 วินาที, ตรวจ SL ผ่าน OnTradeTransaction (ไม่ไล่ประวัติ)
+//  • Z: แคชผลรวมของแท่งที่ปิดแล้ว คำนวณใหม่เฉพาะตอนขึ้นแท่งใหม่ (ต่อ Tick ไม่กี่บรรทัดคณิต)
+//  • จัดการไม้ / Dashboard / เส้น ทำบน OnTimer 1 วินาที, นับ SL ติดต่อกันผ่าน OnTradeTransaction
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
@@ -226,8 +107,6 @@ input int             InpBarZBars          = 2000;       // จำนวนแ�
 input int             InpBarZFontSize      = 8;          // ขนาดตัวอักษรป้าย Z บนแท่ง
 input double          InpBarZOffset_Pts    = 300.0;      // ระยะห่างป้ายจากไส้เทียน (จุด)
 input bool            InpShowEntryMarks    = true;       // มาร์กจุดเปิดไม้ + ระยะห่างถึงปลายไส้เทียน
-input bool            InpShowZLevels       = true;       // เส้นระดับราคาที่ Z ถึงเกณฑ์ รายแท่ง (แสดงอย่างเดียว)
-input int             InpLevelBars         = 200;        // จำนวนแท่งย้อนหลัง (TF ของ Z) ที่วาดเส้นระดับ
 input bool            InpShowReplay        = true;       // Tick Replay: จำลองไม้ย้อนหลังจาก tick จริง + ผลแต่ละไม้
 input int             InpReplayDays        = 10;         // Tick Replay: ย้อนหลังกี่วัน (1-60)
 input bool            InpShowReplayBlocked = true;       // Tick Replay: มาร์กสัญญาณที่ถูกตัวกรองทิ้ง
@@ -266,8 +145,6 @@ input color           InpClrBarZOther      = clrGray;           // ป้าย 
 input color           InpClrEntrySell      = clrRed;            // มาร์กจุดเปิด SELL
 input color           InpClrEntryBuy       = clrLime;           // มาร์กจุดเปิด BUY
 input color           InpClrEntryGap       = clrYellow;         // เส้นประ + ตัวเลขระยะห่างถึงปลายไส้
-input color           InpClrLvlSell        = clrOrangeRed;      // เส้นระดับราคาที่ Z ถึงเกณฑ์ SELL
-input color           InpClrLvlBuy         = clrDeepSkyBlue;    // เส้นระดับราคาที่ Z ถึงเกณฑ์ BUY
 input color           InpClrSimSell        = clrViolet;         // มาร์กจำลอง: SELL
 input color           InpClrSimBuy         = clrPaleGreen;      // มาร์กจำลอง: BUY
 input color           InpClrSimWin         = clrLimeGreen;      // มาร์กจำลอง: เส้นเข้า→ออก ไม้กำไร
@@ -301,12 +178,6 @@ const long   MERGE_GAP_SEC  = 12 * 3600;   // ช่องว่าง session �
 struct WeekBlock {
    long s;   // วินาทีนับจากวันอาทิตย์ 00:00 (เวลาเซิร์ฟเวอร์)
    long e;
-};
-
-// ระดับราคาที่ Z ถึงเกณฑ์ของแท่ง (คงที่ทั้งแท่ง — แสดงบนกราฟ)
-struct BarLevels {
-   bool   sell_ok, buy_ok;
-   double sell_px, buy_px;
 };
 
 // สถานะเฝ้าค่าสุดขั้ว (No new high/low) ของแต่ละฝั่ง — ใช้ร่วมกันทั้ง EA จริงและ Tick Replay
@@ -344,12 +215,6 @@ bool      g_draw         = true;
 datetime  g_zbar_time    = 0;
 bool      g_z_ready      = false;
 double    g_ref          = 0.0;
-double    g_sumY         = 0.0;   // Σy  ของแท่งปิด (x = 0..n-2)
-double    g_sumXY        = 0.0;   // Σxy
-double    g_sumYY        = 0.0;   // Σy²
-double    g_sumD         = 0.0;   // Σd  ของส่วนต่างราคาปิดต่อแท่ง (ระหว่างแท่งปิด)
-double    g_sumDD        = 0.0;   // Σd²
-double    g_last_close   = 0.0;   // ราคาปิดแท่งล่าสุด (ใช้หาส่วนต่างของแท่งปัจจุบัน)
 bool      g_z_valid      = false;
 double    g_z            = 0.0;   // Z ที่มีผลตามเงื่อนไขเข้าไม้ (ทั้งคู่ = ตัวที่ใกล้ 0 กว่า)
 double    g_z_reg        = 0.0;   // Regression Z
@@ -378,7 +243,6 @@ long       g_last_tick_msc  = 0;
 datetime   g_next_try       = 0;
 string     g_last_status    = "เริ่มทำงาน";
 ulong      g_activated[];              // ไม้ที่ระบบไล่จี้เริ่มทำงานแล้ว
-BarLevels  g_zlv;                      // ระดับราคาที่ Z ถึงเกณฑ์ของแท่งปัจจุบัน (แสดงผล)
 
 // --- Session ---
 WeekBlock g_blocks[];
@@ -596,52 +460,6 @@ bool ZAtPrice(const ZCache &zc, double price, double &zr, double &zs,
                    zc.sD + d0, zc.sDD + d0 * d0, zr, zs, fit, sig, fl, mn, ssd);
 }
 
-// ราคาที่ Z (which 0 = Regression / 1 = SMA) ข้ามค่า target — ภายในแท่ง Z เพิ่มตามราคา
-// upper = true → ราคาต่ำสุดที่ Z ≥ target (SELL), false → ราคาสูงสุดที่ Z < target (BUY)
-bool SolveZPrice(const ZCache &zc, int which, double target, bool upper, double &px) {
-   double zr, zs, fit, sig, mn, ssd;
-   bool   fl;
-   double p = zc.last_close;
-   if(!ZAtPrice(zc, p, zr, zs, fit, sig, fl, mn, ssd)) return false;
-   double z     = (which == 0) ? zr : zs;
-   double step  = MathMax(ssd, PtsToPrice(100.0));
-   double dirv  = (z < target) ? 1.0 : -1.0;
-   double lo    = 0.0, hi = 0.0;
-   bool   found = false;
-   for(int k = 0; k < 40 && !found; k++) {   // ขยายช่วงจนคร่อม target
-      double q = p + dirv * step;
-      if(q <= 0.0 || !ZAtPrice(zc, q, zr, zs, fit, sig, fl, mn, ssd)) return false;
-      double zq = (which == 0) ? zr : zs;
-      if(dirv > 0.0 ? (zq >= target) : (zq < target)) { lo = MathMin(p, q); hi = MathMax(p, q); found = true; }
-      else { p = q; step *= 1.6; }
-   }
-   if(!found) return false;   // Z ไปไม่ถึง (Z มีเพดานจากจำนวนแท่ง)
-   for(int k = 0; k < 60 && hi - lo > _Point * 0.05; k++) {
-      double m = 0.5 * (lo + hi);
-      if(!ZAtPrice(zc, m, zr, zs, fit, sig, fl, mn, ssd)) return false;
-      if(((which == 0) ? zr : zs) >= target) hi = m; else lo = m;
-   }
-   px = upper ? hi : lo;
-   return true;
-}
-
-// ระดับราคาที่ Z ถึงเกณฑ์ของแท่ง: ทั้งคู่ → SELL ใช้ระดับที่สูงกว่า / BUY ใช้ระดับที่ต่ำกว่า (ต้องผ่านเกณฑ์ทั้งสองค่า)
-void ComputeLevels(const ZCache &zc, BarLevels &lv) {
-   lv.sell_ok = false; lv.buy_ok = false; lv.sell_px = 0.0; lv.buy_px = 0.0;
-   if(!zc.ok) return;
-   bool   use_r = (InpEntryLogic != ENTRY_SMA);
-   bool   use_s = (InpEntryLogic != ENTRY_REGRESSION);
-   double pr = 0.0, ps = 0.0;
-   if((!use_r || SolveZPrice(zc, 0, InpSellZ, true, pr)) && (!use_s || SolveZPrice(zc, 1, InpSellZ, true, ps))) {
-      lv.sell_px = (use_r && use_s) ? MathMax(pr, ps) : (use_r ? pr : ps);
-      lv.sell_ok = true;
-   }
-   if((!use_r || SolveZPrice(zc, 0, -InpBuyZ, false, pr)) && (!use_s || SolveZPrice(zc, 1, -InpBuyZ, false, ps))) {
-      lv.buy_px = (use_r && use_s) ? MathMin(pr, ps) : (use_r ? pr : ps);
-      lv.buy_ok = true;
-   }
-}
-
 // ความชันเส้นถดถอย (ราคาต่อแท่ง) เมื่อแท่งปัจจุบันอยู่ที่ราคา price
 double SlopeAtPrice(const ZCache &zc, double price) {
    double n   = (double)InpZ_Period;
@@ -667,12 +485,8 @@ bool RefreshClosedBars() {
    }
    BuildZCache(c, g_zc);
    g_ref           = g_zc.ref;
-   g_sumY          = g_zc.sY;  g_sumXY = g_zc.sXY; g_sumYY = g_zc.sYY;
-   g_sumD          = g_zc.sD;  g_sumDD = g_zc.sDD;
-   g_last_close    = g_zc.last_close;
    g_prev_close_zr = g_zc.prev_zr;
    g_prev_close_zs = g_zc.prev_zs;
-   ComputeLevels(g_zc, g_zlv);   // ระดับราคาที่ Z ถึงเกณฑ์ของแท่งใหม่ (คงที่ทั้งแท่ง — แสดงผล)
    if(g_zbar_time != 0) g_bar_changed = true;
 
    // ช่วงแกว่งของแท่งปัจจุบัน
@@ -1045,15 +859,6 @@ int OurPositionsTotal() {
    int b, s;
    CountPositions(b, s);
    return b + s;
-}
-
-void DeleteOurPendings() {
-   for(int i = OrdersTotal() - 1; i >= 0; i--) {
-      ulong t = OrderGetTicket(i);
-      if(t == 0) continue;
-      if(OrderGetInteger(ORDER_MAGIC) != InpMagic || OrderGetString(ORDER_SYMBOL) != _Symbol) continue;
-      trade.OrderDelete(t);
-   }
 }
 
 //--------------------------------------------------------------------
@@ -2866,84 +2671,6 @@ void LoadNewsHistory() {
 }
 
 //====================================================================
-// 📏 เส้นระดับราคาที่ Z ถึงเกณฑ์ รายแท่ง (แสดงอย่างเดียว)
-//====================================================================
-string   g_lvl_names[];
-datetime g_lvl_times[];
-datetime g_lvl_bar = 0;   // แท่งปัจจุบัน (TF ของ Z) ตอนวาดล่าสุด
-
-void SetLevelSeg(string name, datetime t, double px, bool show, color clr, string tip) {
-   if(!show) { if(ObjectFind(0, name) >= 0) ObjectDelete(0, name); return; }
-   datetime t2 = t + (datetime)PeriodSeconds(InpZ_Timeframe);
-   if(ObjectFind(0, name) < 0) {
-      ObjectCreate(0, name, OBJ_TREND, 0, t, px, t2, px);
-      ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-      ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
-      ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
-      ObjectSetInteger(0, name, OBJPROP_BACK, true);
-      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-      int n = ArraySize(g_lvl_names);
-      ArrayResize(g_lvl_names, n + 1);
-      ArrayResize(g_lvl_times, n + 1);
-      g_lvl_names[n] = name;
-      g_lvl_times[n] = t;
-   }
-   ObjectMove(0, name, 0, t,  px);
-   ObjectMove(0, name, 1, t2, px);
-   ObjectSetString(0, name, OBJPROP_TOOLTIP, tip);
-}
-
-void DrawLevelBar(datetime t, const BarLevels &lv) {
-   string ts = IntegerToString((long)t);
-   string tt = TimeToString(t, TIME_DATE|TIME_MINUTES);
-   SetLevelSeg(OBJ_PREFIX + "LV_S_" + ts, t, lv.sell_px, lv.sell_ok, InpClrLvlSell,
-               StringFormat("เริ่มเฝ้า SELL แท่ง %s @ %s (%s ≥ +%.2f)", tt, DoubleToString(lv.sell_px, _Digits), LogicName(), InpSellZ));
-   SetLevelSeg(OBJ_PREFIX + "LV_B_" + ts, t, lv.buy_px, lv.buy_ok, InpClrLvlBuy,
-               StringFormat("เริ่มเฝ้า BUY แท่ง %s @ %s (%s ≤ −%.2f)", tt, DoubleToString(lv.buy_px, _Digits), LogicName(), InpBuyZ));
-}
-
-// เรียกทุก 1 วินาที: ครั้งแรกวาดย้อนหลัง InpLevelBars แท่ง, ขึ้นแท่งใหม่วาดแท่งใหม่ + ลบแท่งที่หลุดช่วง
-void UpdateLevelLines() {
-   if(!g_draw || !InpShowZLevels || !g_z_ready) return;
-   datetime t0 = CurrentZBarTime();
-   if(t0 == 0 || t0 == g_lvl_bar) return;
-   int n = InpZ_Period;
-   if(g_lvl_bar == 0) {
-      int cnt = InpLevelBars + n;
-      double   c[];
-      datetime tt[];
-      if(CopyClose(_Symbol, InpZ_Timeframe, 1, cnt, c) != cnt || CopyTime(_Symbol, InpZ_Timeframe, 1, cnt, tt) != cnt) return;
-      double    s[];
-      ZCache    zc;
-      BarLevels lv;
-      ArrayResize(s, n);
-      for(int j = n; j < cnt; j++) {   // แท่ง j ใช้ราคาปิด n แท่งก่อนหน้า (เหมือนตอนแท่งนั้นยังไม่ปิด)
-         ArrayCopy(s, c, 0, j - n, n);
-         BuildZCache(s, zc);
-         ComputeLevels(zc, lv);
-         DrawLevelBar(tt[j], lv);
-      }
-   }
-   else {
-      datetime cutoff = iTime(_Symbol, InpZ_Timeframe, InpLevelBars);
-      int m = ArraySize(g_lvl_names), w = 0;
-      for(int i = 0; i < m; i++) {
-         if((cutoff > 0 && g_lvl_times[i] < cutoff) || ObjectFind(0, g_lvl_names[i]) < 0) {
-            ObjectDelete(0, g_lvl_names[i]);
-            continue;
-         }
-         g_lvl_names[w] = g_lvl_names[i];
-         g_lvl_times[w] = g_lvl_times[i];
-         w++;
-      }
-      if(w != m) { ArrayResize(g_lvl_names, w); ArrayResize(g_lvl_times, w); }
-   }
-   DrawLevelBar(t0, g_zlv);
-   g_lvl_bar = t0;
-}
-
-//====================================================================
 // 🎨 DISPLAY
 //====================================================================
 void MoveHLine(string name, double price, color clr, ENUM_LINE_STYLE style, int width, string tip, double &cache) {
@@ -3060,12 +2787,9 @@ string WatchText(const WatchState &w, bool is_sell, long now_msc) {
                           StageTag(w.tier), (is_sell ? "≥" : "≤"), TierZ(dir, w.tier) * (is_sell ? 1.0 : -1.0), tw, TierLot(w.tier),
                           w.ext_r, w.ext_s, (double)(now_msc - w.last_new) / 1000.0, wait, ps);
    }
-   bool   ok  = is_sell ? g_zlv.sell_ok : g_zlv.buy_ok;
-   double lvl = is_sell ? g_zlv.sell_px : g_zlv.buy_px;
    string s   = StringFormat("✅ รอ %s %s T1 %+.2f / T2 %+.2f / T3 %+.2f", LogicName(), (is_sell ? "≥" : "≤"),
                               TierZ(is_sell ? -1 : 1, 1) * (is_sell ? 1.0 : -1.0), TierZ(is_sell ? -1 : 1, 2) * (is_sell ? 1.0 : -1.0),
                               TierZ(is_sell ? -1 : 1, 3) * (is_sell ? 1.0 : -1.0));
-   if(ok) s += StringFormat(" (ที่ราคา %s)", DoubleToString(lvl, _Digits));
    return s;
 }
 
@@ -3152,7 +2876,6 @@ int OnInit() {
    if(InpZ_Period < 2 || InpFastPeriod < 2) { Print("❌ Period ต้องอย่างน้อย 2"); return(INIT_PARAMETERS_INCORRECT); }
    if(InpLinesBars < 10 || InpLinesBars > 2000) { Print("❌ InpLinesBars ต้องอยู่ระหว่าง 10-2000"); return(INIT_PARAMETERS_INCORRECT); }
    if(InpBarZBars < 1 || InpBarZBars > 20000) { Print("❌ InpBarZBars ต้องอยู่ระหว่าง 1-20000"); return(INIT_PARAMETERS_INCORRECT); }
-   if(InpLevelBars < 1 || InpLevelBars > 2000) { Print("❌ InpLevelBars ต้องอยู่ระหว่าง 1-2000"); return(INIT_PARAMETERS_INCORRECT); }
    if(InpReplayDays < 1 || InpReplayDays > 60) { Print("❌ InpReplayDays ต้องอยู่ระหว่าง 1-60"); return(INIT_PARAMETERS_INCORRECT); }
    if(InpObsWindow_Min < 0 || InpObsWindow_Min > 15 || InpObsTrend1_Pts <= 0.0 || InpObsTrend2_Pts <= 0.0 || InpObsTrend3_Pts <= 0.0 ||
       InpObsCloseNear_Pts < 0.0 || InpMinPull_Pts < 0.0) {
@@ -3210,8 +2933,6 @@ int OnInit() {
    g_bar_changed   = false;
    g_last_tick_msc = 0;
    g_zc.ok         = false;
-   g_zlv.sell_ok   = false;
-   g_zlv.buy_ok    = false;
    ReplayReset();
    g_zbar_time      = 0;
    g_z_ready        = false;
@@ -3224,9 +2945,6 @@ int OnInit() {
    ArrayResize(g_seg_times, 0);
    ArrayResize(g_marks, 0);
    g_marks_bar = 0;
-   g_lvl_bar   = 0;
-   ArrayResize(g_lvl_names, 0);
-   ArrayResize(g_lvl_times, 0);
    g_newsviz_loaded = 0;
    ArrayResize(g_newsviz_names, 0);
    ArrayResize(g_news_times, 0);
@@ -3239,7 +2957,6 @@ int OnInit() {
    ArrayResize(g_activated, 0);
 
    RefreshNews(ServerNow());
-   DeleteOurPendings();        // Limit ค้างจาก v9 (ถ้ามี)
    RestoreCoolFromHistory();   // ตัวนับ SL ติดต่อกัน / เวลาพัก ไม่หายเมื่อรีสตาร์ท
 
    ObjectsDeleteAll(0, OBJ_PREFIX);
@@ -3292,7 +3009,6 @@ void OnTimer() {
       UpdateZLines();
       UpdateLinesLive();
       UpdateBarZLabels();
-      UpdateLevelLines();
       UpdateEntryMarks();
       ReplayStep();
       LoadNewsHistory();

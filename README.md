@@ -18,6 +18,11 @@ indicator EA XAUUSD
 |---|---|---|
 | `Experts/Seven_Lines_Counter_EA.mq5` | 11.20 | EA สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว (XAUUSD, บัญชี Hedging) |
 
+### Counter EA v11.20 (เคลียโค้ด)
+- ลบการคำนวณราคาที่ Z ถึงเกณฑ์ล่วงหน้า (bisection) + เส้นระดับรายแท่ง และ input `InpShowZLevels`, `InpLevelBars`, `InpClrLvlSell/Buy`
+- ลบตัวแปรสำเนาแคช Z ที่ไม่ได้อ่าน และการลบ Pending Order ตอนเริ่ม (EA ไม่วาง Pending แล้ว)
+- หัวไฟล์อธิบายเฉพาะระบบปัจจุบัน (ประวัติเวอร์ชันอยู่ใน README นี้)
+
 ### Counter EA v11.20
 - ยิงเมื่อราคาถอยจากยอดไส้ของแท่ง (High: SELL / Low: BUY) ≥ 4,000 จุด (`InpMinPull_Pts`) — ครบเวลาเฝ้าแล้วยังไม่ถึง = เฝ้าต่อ,
   Z หลุด T1 = ยกเลิก; ใช้ทั้ง EA จริงและ Tick Replay (ผ่านการทดสอบ 3 ชุดข้อมูล รวมช่วงทดสอบนอกตัวอย่าง)
