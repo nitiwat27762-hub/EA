@@ -2717,6 +2717,17 @@ string ReplayStatsText() {
 
 string ReplayCSVName() { return "7LCEA_Replay_" + _Symbol + ".csv"; }
 
+string ReplayReasonCode(int r) {
+   switch(r) {
+      case RX_TP:    return "TP";
+      case RX_SL:    return "SL";
+      case RX_CUT:   return "CUT60";
+      case RX_TRAIL: return "TRAIL";
+      case RX_WEEK:  return "WEEKCLOSE";
+   }
+   return "OPEN";
+}
+
 // เขียนไม้จำลองที่ปิดแล้วทั้งหมด + ปัจจัย ลง MQL5/Files (เขียนใหม่ทั้งไฟล์เมื่อมีไม้ปิดเพิ่ม)
 void ReplayWriteCSV() {
    string fn = ReplayCSVName();
