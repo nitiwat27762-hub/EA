@@ -3,6 +3,12 @@
 //|      Fast Mean-Reversion Z-Score EA for XAUUSD (Indicator v8.82)  |
 //+------------------------------------------------------------------+
 //
+// 🆕 v11.20: ยิงเมื่อราคาถอยจากยอดไส้ของแท่ง ≥ 4,000 จุด (ผ่านการทดสอบ 3 ชุดข้อมูล) + ค่าเริ่มต้นตามไฟล์ล่าสุด
+//  • ครบเวลาเฝ้าของระดับแล้ว ถ้าราคายังถอยจาก High (SELL) / Low (BUY) ของแท่งไม่ถึง InpMinPull_Pts → เฝ้าต่อ
+//    ยิงเมื่อถอยถึงขณะที่ Z ยังอยู่เหนือ T1 (Z หลุด T1 = ยกเลิกตามเดิม) — ใช้ทั้ง EA จริงและ Tick Replay
+//  • ค่าเริ่มต้น: T1 = 2.40 ทั้งสองฝั่ง, ตัดจบ 1,500 วินาที
+//  • โหมดสังเกต: บันทึก OHLC ของแท่งสัญญาณ + ราคาปิดเทียบ P + Z ตอนปิด และเปิดไม้สมมติทั้งตามน้ำ / สวน ตอนเปิดแท่งถัดไป
+//
 // 🆕 v11.10: โหมดสังเกต "ให้ตลาดตอบเอง" ใน Tick Replay (ไม้สมมติ ไม่เทรดจริง)
 //  • สัญญาณ T1-T3 → ไม่เข้า จำพิกัด P → สังเกตถึงนาทีที่ 10 ของแท่งถัดไป
 //    ทะลุเกิน P ≥ 2,000 / 4,000 / 6,000 → ไม้ตามน้ำของแต่ละระยะ (SL = P ∓ 1,000)
@@ -130,9 +136,10 @@
 //  สวนกลับค่าที่ผิดปกติ (Z ≥ +2.5 / Z ≤ −3.0) ที่ "ควรดีดกลับอย่างรวดเร็ว"
 //  ถ้าไม่ดีดกลับภายในเวลาที่กำหนด = สมมติฐานผิด → ออกทันที
 //
-// 📋 ตรรกะการเข้าไม้ (v11.00) — ครั้งละ 1 ไม้, สวนกลับอย่างเดียว
+// 📋 ตรรกะการเข้าไม้ (v11.20) — ครั้งละ 1 ไม้, สวนกลับอย่างเดียว
 //  ว่าง + เลยนาทีแรก + ไม่ติด Cool down ──(Z ถึง T1)──► เฝ้าค่าสุดขั้ว ──► ยิงเมื่อไม่มีค่าใหม่ครบเวลาของระดับ
-//     T1 Z ≥ 2.5 → 3 วิ | T2 Z ≥ 3.0 → 1 วิ | T3 Z ≥ 3.5 → ทันที | Z ตัวใดหลุดต่ำกว่า T1 → ยกเลิก
+//     T1 Z ≥ 2.4 → 3 วิ | T2 Z ≥ 3.0 → 1 วิ | T3 Z ≥ 3.5 → ทันที | Z ตัวใดหลุดต่ำกว่า T1 → ยกเลิก
+//     (v11.20) ครบเวลาแล้วต้องถอยจากยอดไส้ของแท่ง ≥ 4,000 จุดก่อนยิง (ยังไม่ถึง = เฝ้าต่อ)
 //  • ตัวกรอง: เวลาตลาด + สเปรด | ชน SL ติดต่อกัน 3 ไม้ → พัก 1 ชม.
 // 📋 ตรรกะการจัดการไม้
 //  • TP / SL คงที่ตั้งแต่เปิดไม้
@@ -147,7 +154,7 @@
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "11.10"
+#property version     "11.20"
 #property description "สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว สำหรับ XAUUSD (บัญชี Hedging)"
 
 #include <Trade\Trade.mqh>
@@ -165,15 +172,16 @@ input group "=== 1. Z-Score & จุดเข้า ==="
 input ENUM_TIMEFRAMES InpZ_Timeframe       = PERIOD_M15; // Timeframe ที่ใช้คำนวณ Z
 input int             InpZ_Period          = 20;         // จำนวนแท่งของ SMA / StdDev
 input ENUM_ENTRY_LOGIC InpEntryLogic       = ENTRY_BOTH; // เงื่อนไข Z ที่ใช้เริ่มเฝ้า
-input double          InpSellZ             = 2.50;       // T1 SELL: เฝ้าเมื่อ Z ≥ +ค่านี้ (สวนขาขึ้น)
+input double          InpSellZ             = 2.40;       // T1 SELL: เฝ้าเมื่อ Z ≥ +ค่านี้ (สวนขาขึ้น)
 input double          InpSellZ2            = 3.00;       // T2 SELL: Z ≥ +ค่านี้ → รอแค่ InpT2_Sec
 input double          InpSellZ3            = 3.50;       // T3 SELL: Z ≥ +ค่านี้ → ยิงทันที
-input double          InpBuyZ              = 2.50;       // T1 BUY: เฝ้าเมื่อ Z ≤ −ค่านี้ (สวนขาลง)
+input double          InpBuyZ              = 2.40;       // T1 BUY: เฝ้าเมื่อ Z ≤ −ค่านี้ (สวนขาลง)
 input double          InpBuyZ2             = 3.00;       // T2 BUY: Z ≤ −ค่านี้ → รอแค่ InpT2_Sec
 input double          InpBuyZ3             = 3.50;       // T3 BUY: Z ≤ −ค่านี้ → ยิงทันที
 input int             InpT1_Sec            = 3;          // T1: ยิงเมื่อ Z ทั้งสองไม่ทำค่าสุดขั้วใหม่ครบกี่วินาที
 input int             InpT2_Sec            = 1;          // T2: ยิงเมื่อ Z ทั้งสองไม่ทำค่าสุดขั้วใหม่ครบกี่วินาที
 input double          InpNoNewExtEps       = 0.01;       // Z ต้องเกินค่าสุดขั้วเดิมเท่านี้ถึงนับเป็นค่าใหม่
+input double          InpMinPull_Pts       = 4000.0;     // ยิงเมื่อราคาถอยจากยอดไส้ของแท่ง (High: SELL / Low: BUY) อย่างน้อยกี่จุด — ครบเวลาแล้วยังไม่ถึง = เฝ้าต่อ (0 = ปิด)
 input double          InpSigmaFloorMult    = 0.50;       // ตัวหาร Z ต้องไม่น้อยกว่า ค่านี้ × StdDev ของการเปลี่ยนแปลงราคาต่อแท่ง
 
 input group "=== 2. ออเดอร์ ==="
@@ -191,7 +199,7 @@ input double          InpTrailDist_Pts     = 8000.0;     // ระยะโล�
 input int             InpTrailInterval_Sec = 5;          // ขยับโล่ทุกกี่วินาที (หลังเริ่มไล่จี้แล้ว)
 
 input group "=== 4. กฎดีดกลับเร็ว ==="
-input int             InpQuickWindow_Sec   = 60;         // ทุกไม้ต้องเข้าระบบไล่จี้ภายในกี่วินาที ไม่งั้นตัดจบ (0 = ปิด)
+input int             InpQuickWindow_Sec   = 1500;       // ทุกไม้ต้องเข้าระบบไล่จี้ภายในกี่วินาที ไม่งั้นตัดจบ (0 = ปิด)
 input int             InpBarStartDelay_Sec = 60;         // เฝ้า / เปิดไม้ได้หลังแท่ง (TF ของ Z) เปิดแล้วกี่วินาที
 
 input group "=== 5. Cool down ==="
@@ -229,6 +237,7 @@ input int             InpObsWindow_Min     = 10;         // โหมดสั�
 input double          InpObsTrend1_Pts     = 2000.0;     // โหมดสังเกต: ทะลุเกินพิกัด ≥ ระยะนี้ = เทรนด์ (ชุดที่ 1)
 input double          InpObsTrend2_Pts     = 4000.0;     // โหมดสังเกต: ระยะเทรนด์ชุดที่ 2
 input double          InpObsTrend3_Pts     = 6000.0;     // โหมดสังเกต: ระยะเทรนด์ชุดที่ 3
+input double          InpObsCloseNear_Pts  = 1000.0;     // โหมดสังเกต (สรุปบน Dashboard): แท่งสัญญาณปิดห่าง P ไม่เกินเท่านี้ (หรือเลย P) = เทรนด์
 input bool            InpShowNewsHistory   = true;       // แสดงช่วงข่าวบนกราฟ (แสดงอย่างเดียว ไม่มีผลกับการเทรด, ใช้ไม่ได้ใน Tester)
 input string          InpNewsCurrency      = "USD";      // สกุลเงินของข่าวที่แสดง
 input bool            InpNewsIncludeMedium = false;      // แสดงข่าวระดับ Medium ด้วย
@@ -838,6 +847,17 @@ double SLPrice(int dir, double bar_hi, double bar_lo) {
    return (dir == -1) ? bar_hi + d : bar_lo - d;
 }
 
+// ระยะถอยจากยอดไส้ของแท่ง (TF ของ Z): SELL = High − Bid / BUY = Ask − Low (= ระยะ SL − InpSLBeyond_Pts)
+double PullPts(int dir, double hi, double lo, double bid, double ask) {
+   if(dir == -1) return (hi > 0.0) ? PriceToPts(MathMax(hi, bid) - bid) : 0.0;
+   return (lo > 0.0) ? PriceToPts(ask - MathMin(lo, bid)) : 0.0;
+}
+
+// ครบเวลาเฝ้าแล้วต้องถอยจากยอดไส้ถึงระยะก่อนยิง (ยังไม่ถึง = เฝ้าต่อ, Z หลุด T1 = ยกเลิกตามปกติ)
+bool PullOK(int dir, double hi, double lo, double bid, double ask) {
+   return (InpMinPull_Pts <= 0.0 || PullPts(dir, hi, lo, bid, ask) >= InpMinPull_Pts);
+}
+
 // ตัวกรองตอนยิง (ใช้ร่วมกัน) — เวลาตลาด + เพดานสเปรด
 string EntryBlockReason(int ts, double bid, double ask) {
    if(ts != TS_OPEN) return "เวลาตลาด";
@@ -1086,8 +1106,8 @@ void LiveSignalStep(long now_msc, int ts, double bid, double ask, bool update_wa
       WatchUpdate(g_wsell, -1, g_z_reg, g_z_sma, now_msc, bid);
       WatchUpdate(g_wbuy,   1, g_z_reg, g_z_sma, now_msc, bid);
    }
-   if(WatchReady(g_wsell, now_msc))     LiveFire(-1, ts, bid, ask);
-   else if(WatchReady(g_wbuy, now_msc)) LiveFire( 1, ts, bid, ask);
+   if(WatchReady(g_wsell, now_msc) && PullOK(-1, g_bar0_hi, g_bar0_lo, bid, ask))     LiveFire(-1, ts, bid, ask);
+   else if(WatchReady(g_wbuy, now_msc) && PullOK( 1, g_bar0_hi, g_bar0_lo, bid, ask)) LiveFire( 1, ts, bid, ask);
 }
 
 // ดีลปิดไม้ของ EA → นับ SL ติดต่อกัน / เริ่ม Cool down (deal ต้องถูกเลือกใน history แล้ว)
@@ -2014,8 +2034,11 @@ void ReplayTimeEvents(long msc) {
       else if(cut < wk && cut <= msc)  ReplayClose(cut, px, RX_CUT);
       return;
    }
-   if(WatchReady(g_rp_ws, msc))      ReplayFire(-1, WatchDeadline(g_rp_ws));
-   else if(WatchReady(g_rp_wb, msc)) ReplayFire( 1, WatchDeadline(g_rp_wb));
+   // ครบเวลาเฝ้า + ถอยจากยอดไส้ถึงระยะ (ราคาของ tick ก่อนหน้า) → ยิง ณ เวลาที่ครบทั้งสองเงื่อนไข
+   if(WatchReady(g_rp_ws, msc) && PullOK(-1, g_rp_hi, g_rp_lo, g_rp_bid, g_rp_ask))
+      ReplayFire(-1, MathMax(WatchDeadline(g_rp_ws), g_rp_msc));
+   else if(WatchReady(g_rp_wb, msc) && PullOK( 1, g_rp_hi, g_rp_lo, g_rp_bid, g_rp_ask))
+      ReplayFire( 1, MathMax(WatchDeadline(g_rp_wb), g_rp_msc));
 }
 
 // ไม้ที่ถืออยู่: SL / TP / โล่ ด้วยราคา tick ปัจจุบัน
@@ -2115,6 +2138,7 @@ struct VTrade {
    long     msc_out;
    double   p_out;
    int      reason;
+   int      flag;      // 0 = เปิดได้, 1 = ติดตัวกรอง, 2 = SL อยู่ผิดฝั่งของราคา (เปิดไม่ได้)
 };
 
 struct ObsSig {
@@ -2131,6 +2155,11 @@ struct ObsSig {
    bool     done;       // จบช่วงสังเกตแล้ว
    int      ci;         // ไม้สวน (index ใน g_vt, -1 = ไม่มี)
    int      t1, t2, t3; // ไม้ตามน้ำเมื่อทะลุเกินระยะ 1 / 2 / 3
+   bool     n1_done;    // ปิดแท่ง N แล้ว (บันทึก OHLC + เปิดไม้ตอนเปิดแท่ง N+1)
+   double   bo, bh, bl, bc;   // Open / High / Low / Close ของแท่ง N
+   double   close_vs_p; // ราคาปิดแท่ง N เทียบ P (+ = ปิดเลย P ไปทางเดียวกับการกระชาก)
+   double   zc_r, zc_s; // Z ตอนปิดแท่ง N
+   int      n1t, n1c;   // ไม้ตามน้ำ / ไม้สวน เปิดตอนเปิดแท่ง N+1
    bool     drawn_final;
 };
 
@@ -2170,8 +2199,12 @@ int VTOpen(int dir, double lot, double sl, long msc, double bid, double ask) {
    g_vt[k].p_in = 0.0; g_vt[k].sl = sl; g_vt[k].tp = 0.0; g_vt[k].msc_in = msc;
    g_vt[k].act = false; g_vt[k].last_trail = 0; g_vt[k].fclose = 0;
    g_vt[k].mfe = 0.0; g_vt[k].mae = 0.0; g_vt[k].msc_out = 0; g_vt[k].p_out = 0.0; g_vt[k].reason = RX_OPEN;
+   g_vt[k].flag = 1;
    datetime t = (datetime)(msc / 1000);
    if(EntryBlockReason(GetTimeStateAt(t), bid, ask) != "") return k;
+   g_vt[k].flag = 2;
+   if((dir == -1 && sl <= ask) || (dir == 1 && sl >= bid)) return k;
+   g_vt[k].flag = 0;
    double price = (dir == -1) ? bid : ask;
    g_vt[k].used   = true;
    g_vt[k].open   = true;
@@ -2236,7 +2269,8 @@ double VTUsd(int k) {
 bool VTDone(int k) { return (k < 0 || !g_vt[k].open); }
 
 bool ObsFinished(int i) {
-   return g_ob[i].done && VTDone(g_ob[i].ci) && VTDone(g_ob[i].t1) && VTDone(g_ob[i].t2) && VTDone(g_ob[i].t3);
+   return g_ob[i].done && VTDone(g_ob[i].ci) && VTDone(g_ob[i].t1) && VTDone(g_ob[i].t2) && VTDone(g_ob[i].t3) &&
+          VTDone(g_ob[i].n1t) && VTDone(g_ob[i].n1c);
 }
 
 // สัญญาณ → เริ่มสังเกต (ราคา/แท่ง ของ tick ก่อนหน้า = ตอนสัญญาณ)
@@ -2265,6 +2299,10 @@ void ObsFire(int dir, long fire_msc) {
    g_ob[i].end_exc = 0.0;
    g_ob[i].done    = false;
    g_ob[i].ci = -1; g_ob[i].t1 = -1; g_ob[i].t2 = -1; g_ob[i].t3 = -1;
+   g_ob[i].n1_done = false;
+   g_ob[i].bo = 0.0; g_ob[i].bh = 0.0; g_ob[i].bl = 0.0; g_ob[i].bc = 0.0;
+   g_ob[i].close_vs_p = 0.0; g_ob[i].zc_r = 0.0; g_ob[i].zc_s = 0.0;
+   g_ob[i].n1t = -1; g_ob[i].n1c = -1;
    g_ob[i].drawn_final = false;
    g_ob_active = i;
 }
@@ -2292,6 +2330,24 @@ void ObsTimeEvents(long msc) {
    }
 }
 
+// แท่ง N ปิดแล้ว (tick แรกของแท่ง N+1): บันทึก OHLC / ราคาปิดเทียบ P / Z ตอนปิด + เปิดไม้สมมติทั้งสองทาง
+// (เลือกภายหลังจาก CSV ว่า "ปิดใกล้/เลย P = เทรนด์" ควรใช้เกณฑ์เท่าไหร่)
+void ObsBarClosed(int i, long msc, double bid, double ask) {
+   g_ob[i].n1_done = true;
+   int d = g_ob[i].dir;
+   int b = -1;
+   for(int j = MathMin(g_rp_b, ArraySize(g_rr) - 1); j >= 0 && j >= g_rp_b - 50; j--)
+      if(g_rr[j].time == g_ob[i].bar_t) { b = j; break; }
+   if(b >= 0) {
+      g_ob[i].bo = g_rr[b].open; g_ob[i].bh = g_rr[b].high; g_ob[i].bl = g_rr[b].low; g_ob[i].bc = g_rr[b].close;
+      g_ob[i].close_vs_p = (d == -1) ? (g_ob[i].bc - g_ob[i].p) : (g_ob[i].p - g_ob[i].bc);
+      if(b == g_rp_b - 1 && g_rp_zc.ok) { g_ob[i].zc_r = g_rp_zc.prev_zr; g_ob[i].zc_s = g_rp_zc.prev_zs; }
+   }
+   double off = PtsToPrice(InpSLBeyond_Pts);
+   g_ob[i].n1t = VTOpen(-d, NormalizeLot(InpLot), g_ob[i].p + d * off, msc, bid, ask);       // ตามน้ำ: SL = P ∓ 1,000
+   g_ob[i].n1c = VTOpen( d, TierLot(g_ob[i].tier), g_ob[i].ext - d * off, msc, bid, ask);   // สวน: SL = ยอดไส้ ± 1,000
+}
+
 // ทุก tick: ไม้สมมติ + ยอดไส้ / ระยะทะลุ / ไม้ตามน้ำ ของการสังเกตที่ค้างอยู่
 void ObsTick(long msc, double bid, double ask) {
    for(int j = ArraySize(g_vt_live) - 1; j >= 0; j--)
@@ -2308,6 +2364,7 @@ void ObsTick(long msc, double bid, double ask) {
    if(g_ob[i].t1 < 0 && exc >= PtsToPrice(InpObsTrend1_Pts)) g_ob[i].t1 = VTOpen(-d, lot, sl, msc, bid, ask);
    if(g_ob[i].t2 < 0 && exc >= PtsToPrice(InpObsTrend2_Pts)) g_ob[i].t2 = VTOpen(-d, lot, sl, msc, bid, ask);
    if(g_ob[i].t3 < 0 && exc >= PtsToPrice(InpObsTrend3_Pts)) g_ob[i].t3 = VTOpen(-d, lot, sl, msc, bid, ask);
+   if(!g_ob[i].n1_done && g_rp_bar_t > g_ob[i].bar_t) ObsBarClosed(i, msc, bid, ask);
 }
 
 // สรุปตามระยะเทรนด์: ทะลุถึงระยะ → นับไม้ตามน้ำ, ไม่ถึง → นับไม้สวน
@@ -2332,6 +2389,17 @@ string ObsStatsText() {
    s += StringFormat(" | ทะลุ≥%.0f: สวน %d $%+.2f / ตาม %d $%+.2f", InpObsTrend1_Pts, nc[0], uc[0], nt[0], ut[0]);
    s += StringFormat(" | ≥%.0f: สวน %d $%+.2f / ตาม %d $%+.2f", InpObsTrend2_Pts, nc[1], uc[1], nt[1], ut[1]);
    s += StringFormat(" | ≥%.0f: สวน %d $%+.2f / ตาม %d $%+.2f", InpObsTrend3_Pts, nc[2], uc[2], nt[2], ut[2]);
+   // ตัดสินตอนเปิดแท่ง N+1: ราคาปิดแท่ง N ใกล้ / เลย P (ห่างไม่เกิน InpObsCloseNear_Pts) = ตามน้ำ, ถอยกลับ = สวน
+   int    n1n = 0, n1tn = 0, n1cn = 0;
+   double n1tu = 0.0, n1cu = 0.0;
+   for(int i = 0; i < ArraySize(g_ob); i++) {
+      if(!ObsFinished(i) || !g_ob[i].n1_done) continue;
+      n1n++;
+      if(g_ob[i].close_vs_p >= -PtsToPrice(InpObsCloseNear_Pts)) { if(g_ob[i].n1t >= 0 && g_vt[g_ob[i].n1t].used) { n1tn++; n1tu += VTUsd(g_ob[i].n1t); } }
+      else                                                        { if(g_ob[i].n1c >= 0 && g_vt[g_ob[i].n1c].used) { n1cn++; n1cu += VTUsd(g_ob[i].n1c); } }
+   }
+   s += StringFormat("\n   แท่งสัญญาณปิด (เปิดไม้ตอนเปิดแท่งถัดไป, %d สัญญาณ): ใกล้/เลย P ≤%.0f → ตาม %d $%+.2f | ถอยกลับ → สวน %d $%+.2f",
+                     n1n, InpObsCloseNear_Pts, n1tn, n1tu, n1cn, n1cu);
    if(g_ob_csv_rows >= 0) s += StringFormat("\n   📄 CSV: MQL5\\Files\\%s", ObsCSVName());
    return s;
 }
@@ -2340,7 +2408,7 @@ string ObsCSVName() { return "7LCEA_Observe_" + _Symbol + ".csv"; }
 
 string VTCsv(int k) {
    if(k < 0)          return ",,,,,,,,,,";
-   if(!g_vt[k].used)  return "BLOCKED,,,,,,,,,,";
+   if(!g_vt[k].used)  return (g_vt[k].flag == 2 ? "INVALID_SL" : "BLOCKED") + ",,,,,,,,,,";
    return StringFormat("%s,%s,%s,%.0f,%s,%d,%.0f,%.2f,%.0f,%.0f,",
                        TimeToString((datetime)(g_vt[k].msc_in / 1000), TIME_DATE|TIME_SECONDS),
                        DoubleToString(g_vt[k].p_in, _Digits), DoubleToString(g_vt[k].sl, _Digits),
@@ -2363,7 +2431,9 @@ void ObsWriteCSV(int rows) {
                  VTCsvHead("cnt") +
                  VTCsvHead(StringFormat("trd%.0f", InpObsTrend1_Pts)) +
                  VTCsvHead(StringFormat("trd%.0f", InpObsTrend2_Pts)) +
-                 VTCsvHead(StringFormat("trd%.0f", InpObsTrend3_Pts));
+                 VTCsvHead(StringFormat("trd%.0f", InpObsTrend3_Pts)) +
+                 "barN_open,barN_high,barN_low,barN_close,close_vs_P_pts,zclose_reg,zclose_sma," +
+                 VTCsvHead("n1trd") + VTCsvHead("n1cnt");
    FileWriteString(h, head + "\r\n");
    for(int i = 0; i < ArraySize(g_ob); i++) {
       if(!ObsFinished(i)) continue;
@@ -2374,6 +2444,13 @@ void ObsWriteCSV(int rows) {
                                TimeToString((datetime)(g_ob[i].end_msc / 1000), TIME_DATE|TIME_MINUTES),
                                DoubleToString(g_ob[i].ext, _Digits), PriceToPts(g_ob[i].max_exc), PriceToPts(g_ob[i].end_exc));
       ln += VTCsv(g_ob[i].ci) + VTCsv(g_ob[i].t1) + VTCsv(g_ob[i].t2) + VTCsv(g_ob[i].t3);
+      if(g_ob[i].n1_done)
+         ln += StringFormat("%s,%s,%s,%s,%.0f,%.3f,%.3f,", DoubleToString(g_ob[i].bo, _Digits), DoubleToString(g_ob[i].bh, _Digits),
+                            DoubleToString(g_ob[i].bl, _Digits), DoubleToString(g_ob[i].bc, _Digits), PriceToPts(g_ob[i].close_vs_p),
+                            g_ob[i].zc_r, g_ob[i].zc_s);
+      else
+         ln += ",,,,,,,";
+      ln += VTCsv(g_ob[i].n1t) + VTCsv(g_ob[i].n1c);
       FileWriteString(h, ln + "\r\n");
    }
    FileClose(h);
@@ -2410,6 +2487,17 @@ void DrawObs(int i) {
       if(tk[k] < 0) continue;
       tip += StringFormat("\nตาม (ทะลุ≥%.0f): %s", th[k], !g_vt[tk[k]].used ? "ติดตัวกรอง"
                           : (g_vt[tk[k]].open ? "ถืออยู่" : StringFormat("%s %+.0f จุด $%+.2f", ReplayReasonName(g_vt[tk[k]].reason), VTPts(tk[k]), VTUsd(tk[k]))));
+   }
+   if(g_ob[i].n1_done) {
+      tip += StringFormat("\nแท่งสัญญาณปิด %s (เทียบ P %+.0f จุด)", DoubleToString(g_ob[i].bc, _Digits), PriceToPts(g_ob[i].close_vs_p));
+      int nk[2];
+      nk[0] = g_ob[i].n1t; nk[1] = g_ob[i].n1c;
+      for(int k = 0; k < 2; k++) {
+         if(nk[k] < 0) continue;
+         tip += StringFormat("\nเปิดแท่งถัดไป %s: %s", (k == 0 ? "ตาม" : "สวน"),
+                             !g_vt[nk[k]].used ? (g_vt[nk[k]].flag == 2 ? "SL ผิดฝั่ง" : "ติดตัวกรอง")
+                             : (g_vt[nk[k]].open ? "ถืออยู่" : StringFormat("%s %+.0f จุด $%+.2f", ReplayReasonName(g_vt[nk[k]].reason), VTPts(nk[k]), VTUsd(nk[k]))));
+      }
    }
    ObjectSetString(0, nm, OBJPROP_TOOLTIP, tip);
    g_ob[i].drawn_final = fin;
@@ -2895,8 +2983,8 @@ void UpdateLiveZLabel(double bid) {
 
    string text = StringFormat("R %+.2f | S %+.2f ▶", g_z_reg, g_z_sma);
    long now_msc = MathMax(g_last_tick_msc, (long)ServerNow() * 1000);
-   if(g_wsell.active)      text = "SELL " + WatchShortText(g_wsell, now_msc) + "  |  " + text;
-   else if(g_wbuy.active)  text = "BUY "  + WatchShortText(g_wbuy,  now_msc) + "  |  " + text;
+   if(g_wsell.active)      text = "SELL " + WatchShortText(g_wsell, true,  now_msc) + "  |  " + text;
+   else if(g_wbuy.active)  text = "BUY "  + WatchShortText(g_wbuy,  false, now_msc) + "  |  " + text;
 
    int x = 0, y = 0;
    if(!ChartTimePriceToXY(0, 0, iTime(_Symbol, PERIOD_CURRENT, 0), bid, x, y)) return;
@@ -2946,9 +3034,12 @@ void UpdateZLines() {
    }
 }
 
-string WatchShortText(const WatchState &w, long now_msc) {
+string WatchShortText(const WatchState &w, bool is_sell, long now_msc) {
    double left = (double)(WatchDeadline(w) - now_msc) / 1000.0;
    if(left < 0.0) left = 0.0;
+   double pull = PullPts(is_sell ? -1 : 1, g_bar0_hi, g_bar0_lo, SymbolInfoDouble(_Symbol, SYMBOL_BID), SymbolInfoDouble(_Symbol, SYMBOL_ASK));
+   if(left <= 0.0 && InpMinPull_Pts > 0.0 && pull < InpMinPull_Pts)
+      return StringFormat("เฝ้า %s รอถอย %.0f/%.0f", StageTag(w.tier), pull, InpMinPull_Pts);
    return StringFormat("เฝ้า %s ยิงใน %.1f วิ", StageTag(w.tier), left);
 }
 
@@ -2962,9 +3053,12 @@ string WatchText(const WatchState &w, bool is_sell, long now_msc) {
       if(left < 0.0) left = 0.0;
       int    dir = is_sell ? -1 : 1;
       string tw  = (w.tier >= 3) ? "ยิงทันที" : StringFormat("รอ %d วิ", (w.tier == 2 ? InpT2_Sec : InpT1_Sec));
-      return StringFormat("👀 เฝ้า %s (Z %s %.2f %s, Lot %.2f) | สุดขั้ว R %+.2f / S %+.2f | ไม่มีค่าใหม่มา %.1f วิ → ยิงในอีก %.1f วิ",
+      double pull = PullPts(dir, g_bar0_hi, g_bar0_lo, SymbolInfoDouble(_Symbol, SYMBOL_BID), SymbolInfoDouble(_Symbol, SYMBOL_ASK));
+      string ps   = (InpMinPull_Pts > 0.0) ? StringFormat(" | ถอยจากยอดไส้ %.0f / %.0f จุด%s", pull, InpMinPull_Pts, (pull >= InpMinPull_Pts ? " ✓" : "")) : "";
+      string wait = (left <= 0.0 && InpMinPull_Pts > 0.0 && pull < InpMinPull_Pts) ? "ครบเวลาแล้ว → รอราคาถอยถึงระยะ" : StringFormat("ยิงในอีก %.1f วิ", left);
+      return StringFormat("👀 เฝ้า %s (Z %s %.2f %s, Lot %.2f) | สุดขั้ว R %+.2f / S %+.2f | ไม่มีค่าใหม่มา %.1f วิ → %s%s",
                           StageTag(w.tier), (is_sell ? "≥" : "≤"), TierZ(dir, w.tier) * (is_sell ? 1.0 : -1.0), tw, TierLot(w.tier),
-                          w.ext_r, w.ext_s, (double)(now_msc - w.last_new) / 1000.0, left);
+                          w.ext_r, w.ext_s, (double)(now_msc - w.last_new) / 1000.0, wait, ps);
    }
    bool   ok  = is_sell ? g_zlv.sell_ok : g_zlv.buy_ok;
    double lvl = is_sell ? g_zlv.sell_px : g_zlv.buy_px;
@@ -3030,8 +3124,8 @@ void UpdateDashboard(int ts, datetime now) {
    string news_str = NextNewsText(now);
 
    long   now_msc = MathMax(g_last_tick_msc, (long)now * 1000);
-   string msg = StringFormat("=== 📊 7-Lines Counter EA v11.10 (เข้าไม้: %s | T1 %d วิ / T2 %d วิ / T3 ทันที | Z หลุด T1 = ยกเลิก | SL = High/Low แท่ง ± %.0f) ===\n",
-                             LogicName(), InpT1_Sec, InpT2_Sec, InpSLBeyond_Pts);
+   string msg = StringFormat("=== 📊 7-Lines Counter EA v11.20 (เข้าไม้: %s | T1 %d วิ / T2 %d วิ / T3 ทันที | ถอยจากยอดไส้ ≥ %.0f | Z หลุด T1 = ยกเลิก | SL = High/Low แท่ง ± %.0f) ===\n",
+                             LogicName(), InpT1_Sec, InpT2_Sec, InpMinPull_Pts, InpSLBeyond_Pts);
    msg += StringFormat("Z (%s, %d) : %s\n", EnumToString(InpZ_Timeframe), InpZ_Period, z_str);
    msg += StringFormat("Z แท่งที่เพิ่งปิด : R %+.2f / S %+.2f%s\n", g_prev_close_zr, g_prev_close_zs, (news_str == "" ? "" : " | " + news_str));
    msg += "SELL : " + WatchText(g_wsell, true,  now_msc) + "\n";
@@ -3060,8 +3154,9 @@ int OnInit() {
    if(InpBarZBars < 1 || InpBarZBars > 20000) { Print("❌ InpBarZBars ต้องอยู่ระหว่าง 1-20000"); return(INIT_PARAMETERS_INCORRECT); }
    if(InpLevelBars < 1 || InpLevelBars > 2000) { Print("❌ InpLevelBars ต้องอยู่ระหว่าง 1-2000"); return(INIT_PARAMETERS_INCORRECT); }
    if(InpReplayDays < 1 || InpReplayDays > 60) { Print("❌ InpReplayDays ต้องอยู่ระหว่าง 1-60"); return(INIT_PARAMETERS_INCORRECT); }
-   if(InpObsWindow_Min < 0 || InpObsWindow_Min > 15 || InpObsTrend1_Pts <= 0.0 || InpObsTrend2_Pts <= 0.0 || InpObsTrend3_Pts <= 0.0) {
-      Print("❌ โหมดสังเกต: ช่วงสังเกตต้องอยู่ระหว่าง 0-15 นาที และระยะเทรนด์ต้องมากกว่า 0");
+   if(InpObsWindow_Min < 0 || InpObsWindow_Min > 15 || InpObsTrend1_Pts <= 0.0 || InpObsTrend2_Pts <= 0.0 || InpObsTrend3_Pts <= 0.0 ||
+      InpObsCloseNear_Pts < 0.0 || InpMinPull_Pts < 0.0) {
+      Print("❌ โหมดสังเกต / ระยะถอยจากยอดไส้ ไม่ถูกต้อง (ช่วงสังเกต 0-15 นาที, ระยะต้องไม่ติดลบ)");
       return(INIT_PARAMETERS_INCORRECT);
    }
    if(InpSellZ <= 0.0 || InpSellZ2 < InpSellZ || InpSellZ3 < InpSellZ2 || InpBuyZ <= 0.0 || InpBuyZ2 < InpBuyZ || InpBuyZ3 < InpBuyZ2 ||
