@@ -11,11 +11,12 @@
 //  • Z_reg = (ราคา − เส้นถดถอยเชิงเส้น) / max(StdDev รอบเส้นถดถอย, 0.5 × StdDev ของส่วนต่างราคาต่อแท่ง)
 //  • Z_SMA = (ราคา − SMA20) / StdDev20 — เงื่อนไขเข้าไม้ใช้ทั้งคู่ / ตัวเดียว ตาม InpEntryLogic
 //
-// 📋 ตรรกะการเข้าไม้ (v11.20) — ครั้งละ 1 ไม้, สวนกลับอย่างเดียว
+// 📋 ตรรกะการเข้าไม้ (v11.30) — ครั้งละ 1 ไม้, สวนกลับอย่างเดียว
 //  ว่าง + เลยนาทีแรกของแท่ง + ไม่ติด Cool down ──(Z ถึง T1)──► เฝ้าค่าสุดขั้วของ Z_reg / Z_SMA
 //     ยิงเมื่อไม่มีค่าสุดขั้วใหม่ครบเวลาของระดับ: T1 Z ≥ 2.4 → 3 วิ | T2 Z ≥ 3.0 → 1 วิ | T3 Z ≥ 3.5 → ทันที
 //     ระดับตาม Z ปัจจุบัน (หลุดเกณฑ์ของระดับ = ลดระดับ), Z ตัวใดหลุดต่ำกว่า T1 → ยกเลิกแล้วหาสัญญาณใหม่
-//     ครบเวลาแล้วต้องถอยจากยอดไส้ของแท่ง (High: SELL / Low: BUY) ≥ 4,000 จุดก่อนยิง (ยังไม่ถึง = เฝ้าต่อ)
+//     ครบเวลาแล้วต้องถอยจากยอดไส้ของแท่ง (High: SELL / Low: BUY) ≥ 4,000 จุด (InpPullMode):
+//       AT_TIMER (ค่าเริ่มต้น) ไม่ถึง = ทิ้ง แล้วรอขาใหม่ (Z กลับต่ำกว่า T1 / ราคาทะลุระดับ SL ของสัญญาณที่ทิ้ง) | WAIT = เฝ้าต่อจนถึง
 //  • Lot ตามระดับ: T1 = Lot, T2 = +0.01, T3 = +0.02
 //  • ตัวกรอง: เวลาตลาด + สเปรด | ชน SL ติดต่อกัน 3 ไม้ → พัก 1 ชม. (คืนค่าจากประวัติเมื่อรีสตาร์ท)
 //
@@ -27,7 +28,8 @@
 //
 // 🧪 Tick Replay (บนกราฟ, ไม่ใช่ Strategy Tester)
 //  • เล่นซ้ำ tick จริงย้อนหลังด้วยกติกาเดียวกับ EA + บันทึกปัจจัยของทุกไม้ลง MQL5/Files/7LCEA_Replay_<symbol>.csv
-//  • โหมดสังเกต "ให้ตลาดตอบเอง" (ไม้สมมติ) → MQL5/Files/7LCEA_Observe_<symbol>.csv
+//  • ทดสอบ Stop ตามน้ำที่ SL ของไม้สวน + 500 (ไม้สมมติ) → คอลัมน์ hedge_* ในไฟล์เดียวกัน
+//  • โหมดสังเกต "ให้ตลาดตอบเอง" (ไม้สมมติ, ปิดเป็นค่าเริ่มต้น) → MQL5/Files/7LCEA_Observe_<symbol>.csv
 //
 // ⚡ การประหยัด CPU
 //  • Z: แคชผลรวมของแท่งที่ปิดแล้ว คำนวณใหม่เฉพาะตอนขึ้นแท่งใหม่ (ต่อ Tick ไม่กี่บรรทัดคณิต)
@@ -35,7 +37,7 @@
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "11.20"
+#property version     "11.30"
 #property description "สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว สำหรับ XAUUSD (บัญชี Hedging)"
 
 #include <Trade\Trade.mqh>
@@ -43,6 +45,11 @@
 //====================================================================
 // 🎛️ INPUT PARAMETERS
 //====================================================================
+enum ENUM_PULL_MODE {
+   PULL_AT_TIMER = 0,      // ต้องถอยถึงตั้งแต่ตอนครบเวลาเฝ้า — ไม่ถึง = ทิ้งสัญญาณ (รอขาใหม่)
+   PULL_WAIT     = 1       // ครบเวลาแล้วยังไม่ถึง = เฝ้าต่อ ยิงเมื่อถอยถึง
+};
+
 enum ENUM_ENTRY_LOGIC {
    ENTRY_BOTH       = 0,   // ต้องถึงเกณฑ์ทั้ง Z_reg และ Z_SMA
    ENTRY_REGRESSION = 1,   // Z_reg อย่างเดียว
@@ -62,7 +69,8 @@ input double          InpBuyZ3             = 3.50;       // T3 BUY: Z ≤ −ค
 input int             InpT1_Sec            = 3;          // T1: ยิงเมื่อ Z ทั้งสองไม่ทำค่าสุดขั้วใหม่ครบกี่วินาที
 input int             InpT2_Sec            = 1;          // T2: ยิงเมื่อ Z ทั้งสองไม่ทำค่าสุดขั้วใหม่ครบกี่วินาที
 input double          InpNoNewExtEps       = 0.01;       // Z ต้องเกินค่าสุดขั้วเดิมเท่านี้ถึงนับเป็นค่าใหม่
-input double          InpMinPull_Pts       = 4000.0;     // ยิงเมื่อราคาถอยจากยอดไส้ของแท่ง (High: SELL / Low: BUY) อย่างน้อยกี่จุด — ครบเวลาแล้วยังไม่ถึง = เฝ้าต่อ (0 = ปิด)
+input double          InpMinPull_Pts       = 4000.0;     // ยิงเมื่อราคาถอยจากยอดไส้ของแท่ง (High: SELL / Low: BUY) อย่างน้อยกี่จุด (0 = ปิด)
+input ENUM_PULL_MODE  InpPullMode          = PULL_AT_TIMER; // วิธีใช้ระยะถอย: ต้องถึงตอนครบเวลา (ไม่ถึง = ทิ้ง) / รอจนถึง
 input double          InpSigmaFloorMult    = 0.50;       // ตัวหาร Z ต้องไม่น้อยกว่า ค่านี้ × StdDev ของการเปลี่ยนแปลงราคาต่อแท่ง
 
 input group "=== 2. ออเดอร์ ==="
@@ -111,11 +119,15 @@ input bool            InpShowReplay        = true;       // Tick Replay: จำ�
 input int             InpReplayDays        = 10;         // Tick Replay: ย้อนหลังกี่วัน (1-60)
 input bool            InpShowReplayBlocked = true;       // Tick Replay: มาร์กสัญญาณที่ถูกตัวกรองทิ้ง
 input bool            InpReplayCSV         = true;       // Tick Replay: บันทึกปัจจัยของทุกไม้ลงไฟล์ CSV (MQL5/Files)
-input bool            InpObserveMode       = true;       // 🔭 Tick Replay: โหมดสังเกต "ให้ตลาดตอบเอง" (ไม้สมมติ ไม่เทรดจริง) + CSV
+input bool            InpObserveMode       = false;      // 🔭 Tick Replay: โหมดสังเกต "ให้ตลาดตอบเอง" (ไม้สมมติ ไม่เทรดจริง) + CSV
 input int             InpObsWindow_Min     = 10;         // โหมดสังเกต: สังเกตถึงนาทีที่เท่านี้ของแท่งถัดไป
 input double          InpObsTrend1_Pts     = 2000.0;     // โหมดสังเกต: ทะลุเกินพิกัด ≥ ระยะนี้ = เทรนด์ (ชุดที่ 1)
 input double          InpObsTrend2_Pts     = 4000.0;     // โหมดสังเกต: ระยะเทรนด์ชุดที่ 2
 input double          InpObsTrend3_Pts     = 6000.0;     // โหมดสังเกต: ระยะเทรนด์ชุดที่ 3
+input bool            InpHedgeTest         = true;       // 🧪 Tick Replay: ทดสอบ Stop ตามน้ำที่ SL ของไม้สวน + ระยะ (ไม้สมมติ ไม่เทรดจริง)
+input double          InpHedgeOffset_Pts   = 500.0;      // ทดสอบตามน้ำ: วาง Stop เลย SL ของไม้สวนไปกี่จุด
+input double          InpHedgeSL_Pts       = 1500.0;     // ทดสอบตามน้ำ: SL ของไม้ตามน้ำห่างจากราคาเข้า (จุด)
+input int             InpHedgeLife_Min     = 30;         // ทดสอบตามน้ำ: ไม้สวนชน SL แล้ว Stop ยังรออยู่ได้อีกกี่นาที
 input double          InpObsCloseNear_Pts  = 1000.0;     // โหมดสังเกต (สรุปบน Dashboard): แท่งสัญญาณปิดห่าง P ไม่เกินเท่านี้ (หรือเลย P) = เทรนด์
 input bool            InpShowNewsHistory   = true;       // แสดงช่วงข่าวบนกราฟ (แสดงอย่างเดียว ไม่มีผลกับการเทรด, ใช้ไม่ได้ใน Tester)
 input string          InpNewsCurrency      = "USD";      // สกุลเงินของข่าวที่แสดง
@@ -198,6 +210,13 @@ struct CoolState {
    datetime until;    // พักถึงเวลานี้
 };
 
+// PULL_AT_TIMER: ครบเวลาแล้วถอยไม่ถึง → ทิ้งสัญญาณ และไม่เฝ้าฝั่งนั้นใหม่จนกว่าจะเริ่มขาใหม่
+//   (Z กลับต่ำกว่า T1 หรือราคาทะลุระดับที่จะเป็น SL ของสัญญาณที่ทิ้ง)
+struct PullBlock {
+   bool   on;
+   double level;
+};
+
 // แคชผลรวมของแท่งที่ปิดแล้ว (ใช้ร่วมกันทั้ง EA จริงและ Tick Replay)
 struct ZCache {
    bool   ok;
@@ -237,6 +256,8 @@ datetime  g_news_loaded  = 0;
 // --- เฝ้าค่าสุดขั้ว / Cool down (EA จริง) ---
 WatchState g_wsell;
 WatchState g_wbuy;
+PullBlock  g_pb_s;                     // ทิ้งสัญญาณ SELL เพราะถอยไม่ถึง → รอขาใหม่
+PullBlock  g_pb_b;
 CoolState  g_cool;
 bool       g_bar_changed    = false;   // ขึ้นแท่งใหม่ (TF ของ Z) → ล้างการเฝ้า
 long       g_last_tick_msc  = 0;
@@ -672,6 +693,18 @@ bool PullOK(int dir, double hi, double lo, double bid, double ask) {
    return (InpMinPull_Pts <= 0.0 || PullPts(dir, hi, lo, bid, ask) >= InpMinPull_Pts);
 }
 
+// PULL_AT_TIMER: ทิ้งสัญญาณแล้วรอขาใหม่ (PullBlockSet / PullBlockUpdate)
+void PullBlockSet(PullBlock &b, int dir, double hi, double lo, double bid) {
+   double off = PtsToPrice(InpSLBeyond_Pts);
+   b.on    = true;
+   b.level = (dir == -1) ? MathMax(hi, bid) + off : ((lo > 0.0) ? MathMin(lo, bid) : bid) - off;
+}
+
+void PullBlockUpdate(PullBlock &b, int dir, double zr, double zs, double bid) {
+   if(!b.on) return;
+   if(TierOf(dir, zr, zs) < 1 || (dir == -1 ? bid >= b.level : bid <= b.level)) b.on = false;
+}
+
 // ตัวกรองตอนยิง (ใช้ร่วมกัน) — เวลาตลาด + เพดานสเปรด
 string EntryBlockReason(int ts, double bid, double ask) {
    if(ts != TS_OPEN) return "เวลาตลาด";
@@ -907,12 +940,24 @@ void LiveSignalStep(long now_msc, int ts, double bid, double ask, bool update_wa
       g_bar_changed = false;
       if(busy || early || cool) return;
    }
+   PullBlockUpdate(g_pb_s, -1, g_z_reg, g_z_sma, bid);
+   PullBlockUpdate(g_pb_b,  1, g_z_reg, g_z_sma, bid);
    if(update_watch) {
-      WatchUpdate(g_wsell, -1, g_z_reg, g_z_sma, now_msc, bid);
-      WatchUpdate(g_wbuy,   1, g_z_reg, g_z_sma, now_msc, bid);
+      if(!g_pb_s.on) WatchUpdate(g_wsell, -1, g_z_reg, g_z_sma, now_msc, bid);
+      if(!g_pb_b.on) WatchUpdate(g_wbuy,   1, g_z_reg, g_z_sma, now_msc, bid);
    }
-   if(WatchReady(g_wsell, now_msc) && PullOK(-1, g_bar0_hi, g_bar0_lo, bid, ask))     LiveFire(-1, ts, bid, ask);
-   else if(WatchReady(g_wbuy, now_msc) && PullOK( 1, g_bar0_hi, g_bar0_lo, bid, ask)) LiveFire( 1, ts, bid, ask);
+   if(WatchReady(g_wsell, now_msc))     LivePullGate(-1, ts, bid, ask);
+   else if(WatchReady(g_wbuy, now_msc)) LivePullGate( 1, ts, bid, ask);
+}
+
+// ครบเวลาเฝ้า: ถอยจากยอดไส้ถึงระยะ → ยิง / ไม่ถึง → ทิ้ง (PULL_AT_TIMER) หรือเฝ้าต่อ (PULL_WAIT)
+void LivePullGate(int dir, int ts, double bid, double ask) {
+   if(PullOK(dir, g_bar0_hi, g_bar0_lo, bid, ask)) { LiveFire(dir, ts, bid, ask); return; }
+   if(InpPullMode != PULL_AT_TIMER) return;
+   g_last_status = StringFormat("%s ครบเวลาแล้ว แต่ถอยจากยอดไส้แค่ %.0f / %.0f จุด → ทิ้งสัญญาณ รอขาใหม่",
+                                (dir == -1 ? "SELL" : "BUY"), PullPts(dir, g_bar0_hi, g_bar0_lo, bid, ask), InpMinPull_Pts);
+   if(dir == -1) { PullBlockSet(g_pb_s, -1, g_bar0_hi, g_bar0_lo, bid); WatchReset(g_wsell); }
+   else          { PullBlockSet(g_pb_b,  1, g_bar0_hi, g_bar0_lo, bid); WatchReset(g_wbuy); }
 }
 
 // ดีลปิดไม้ของ EA → นับ SL ติดต่อกัน / เริ่ม Cool down (deal ต้องถูกเลือกใน history แล้ว)
@@ -1557,6 +1602,12 @@ struct RTrade {
    int      f_hour, f_min, f_gmt_hour, f_dow;
    double   f_zdiff;       // Z_reg − Z_SMA ตอนยิง
    double   mfe, mae;      // กำไรสูงสุด / ติดลบสูงสุดระหว่างถือ (ราคา)
+   double   sl0;           // SL ตอนเปิดไม้ (ก่อนขยับโล่)
+   double   pull;          // ระยะถอยจากยอดไส้ตอนเปิดไม้ (จุด)
+   int      hg_state;      // ทดสอบ Stop ตามน้ำ: HG_*
+   double   hg_price;      // ราคา Stop
+   long     hg_exp;        // หมดอายุ (msc)
+   int      hg_vt;         // ไม้ตามน้ำ (index ใน g_vt)
    bool     activated;
    long     last_trail_sec;
    datetime force_close;
@@ -1581,6 +1632,12 @@ struct RCool {
    double   price;
    datetime until;
 };
+
+#define HG_NONE     0
+#define HG_PENDING  1
+#define HG_FILLED   2
+#define HG_CANCEL   3   // ไม้สวนปิดแบบไม่ใช่ SL → ยกเลิก
+#define HG_EXPIRED  4
 
 RTrade     g_rt[];
 RBlocked   g_rb[];
@@ -1607,6 +1664,9 @@ int        g_rp_closed    = 0;       // จำนวนไม้จำลอง�
 int        g_rp_csv_rows  = -1;      // จำนวนไม้ที่เขียนลง CSV ล่าสุด
 WatchState g_rp_ws;
 WatchState g_rp_wb;
+PullBlock  g_rp_pbs;                // ทิ้งสัญญาณเพราะถอยไม่ถึง → รอขาใหม่ (Replay)
+PullBlock  g_rp_pbb;
+int        g_hg_live[];             // ไม้หลักที่มี Stop ตามน้ำรออยู่
 double     g_rp_bid = 0.0, g_rp_ask = 0.0, g_rp_zr = 0.0, g_rp_zs = 0.0;
 long       g_rp_msc       = 0;
 bool       g_rp_have      = false;
@@ -1627,6 +1687,8 @@ void ReplayReset() {
    CoolReset(g_rp_cool);
    g_rp_b = -1; g_rp_bar_t = 0; g_rp_zc.ok = false; g_rp_bar_chg = false; g_rp_hi = 0.0; g_rp_lo = 0.0;
    WatchReset(g_rp_ws); WatchReset(g_rp_wb);
+   g_rp_pbs.on = false; g_rp_pbb.on = false;
+   ArrayResize(g_hg_live, 0);
    g_rp_bid = 0.0; g_rp_ask = 0.0; g_rp_zr = 0.0; g_rp_zs = 0.0;
    g_rp_msc = 0; g_rp_have = false; g_rp_init = false; g_rp_caught = false;
    g_rp_cursor = 0; g_rp_retry = 0; g_rp_ticks = 0;
@@ -1739,6 +1801,16 @@ int ReplayOpen(int dir, int stage, long msc, double price) {
    g_rt[i].f_hour = 0; g_rt[i].f_min = 0; g_rt[i].f_gmt_hour = 0; g_rt[i].f_dow = 0;
    g_rt[i].f_zdiff = 0.0;
    g_rt[i].mfe = 0.0; g_rt[i].mae = 0.0;
+   g_rt[i].sl0      = g_rt[i].sl;
+   g_rt[i].pull     = PullPts(dir, g_rp_hi, g_rp_lo, g_rp_bid, g_rp_ask);
+   g_rt[i].hg_state = HG_NONE; g_rt[i].hg_price = 0.0; g_rt[i].hg_exp = LONG_MAX; g_rt[i].hg_vt = -1;
+   if(InpHedgeTest) {   // Stop ตามน้ำเลย SL ของไม้สวนไป InpHedgeOffset_Pts
+      g_rt[i].hg_state = HG_PENDING;
+      g_rt[i].hg_price = g_rt[i].sl - dir * PtsToPrice(InpHedgeOffset_Pts);
+      int n = ArraySize(g_hg_live);
+      ArrayResize(g_hg_live, n + 1);
+      g_hg_live[n] = i;
+   }
    g_rt[i].activated      = false;
    g_rt[i].last_trail_sec = 0;
    g_rt[i].force_close    = ForceCloseTimeAt((datetime)(msc / 1000));
@@ -1766,6 +1838,10 @@ void ReplayClose(long msc_out, double price, int reason) {
    g_rt[i].usd     = diff * g_rt[i].lot * g_contract;
    g_rt_open = -1;
    g_rp_closed++;
+   if(g_rt[i].hg_state == HG_PENDING) {   // ไม้สวนชน SL → Stop รอต่อ InpHedgeLife_Min นาที, ปิดแบบอื่น → ยกเลิก
+      if(reason == RX_SL) g_rt[i].hg_exp = msc_out + (long)InpHedgeLife_Min * 60000;
+      else                HedgeDone(i, HG_CANCEL);
+   }
    if(CoolOnClose(g_rp_cool, reason == RX_SL && diff < 0.0, (datetime)(msc_out / 1000))) {
       int k = ArraySize(g_rc);
       ArrayResize(g_rc, k + 1);
@@ -1839,11 +1915,43 @@ void ReplayTimeEvents(long msc) {
       else if(cut < wk && cut <= msc)  ReplayClose(cut, px, RX_CUT);
       return;
    }
-   // ครบเวลาเฝ้า + ถอยจากยอดไส้ถึงระยะ (ราคาของ tick ก่อนหน้า) → ยิง ณ เวลาที่ครบทั้งสองเงื่อนไข
-   if(WatchReady(g_rp_ws, msc) && PullOK(-1, g_rp_hi, g_rp_lo, g_rp_bid, g_rp_ask))
-      ReplayFire(-1, MathMax(WatchDeadline(g_rp_ws), g_rp_msc));
-   else if(WatchReady(g_rp_wb, msc) && PullOK( 1, g_rp_hi, g_rp_lo, g_rp_bid, g_rp_ask))
-      ReplayFire( 1, MathMax(WatchDeadline(g_rp_wb), g_rp_msc));
+   // ครบเวลาเฝ้า (ราคาของ tick ก่อนหน้า): ถอยจากยอดไส้ถึงระยะ → ยิง / ไม่ถึง → ทิ้ง (AT_TIMER) หรือเฝ้าต่อ (WAIT)
+   if(WatchReady(g_rp_ws, msc))      ReplayPullGate(-1, MathMax(WatchDeadline(g_rp_ws), g_rp_msc));
+   else if(WatchReady(g_rp_wb, msc)) ReplayPullGate( 1, MathMax(WatchDeadline(g_rp_wb), g_rp_msc));
+}
+
+void ReplayPullGate(int dir, long fire_msc) {
+   if(PullOK(dir, g_rp_hi, g_rp_lo, g_rp_bid, g_rp_ask)) { ReplayFire(dir, fire_msc); return; }
+   if(InpPullMode != PULL_AT_TIMER) return;
+   int k = ArraySize(g_rb);
+   ArrayResize(g_rb, k + 1);
+   g_rb[k].msc = fire_msc; g_rb[k].dir = dir;
+   g_rb[k].price = (dir == -1) ? g_rp_bid : g_rp_ask;
+   g_rb[k].why = StringFormat("ถอยจากยอดไส้ %.0f / %.0f จุด → ทิ้ง รอขาใหม่", PullPts(dir, g_rp_hi, g_rp_lo, g_rp_bid, g_rp_ask), InpMinPull_Pts);
+   if(dir == -1) { PullBlockSet(g_rp_pbs, -1, g_rp_hi, g_rp_lo, g_rp_bid); WatchReset(g_rp_ws); }
+   else          { PullBlockSet(g_rp_pbb,  1, g_rp_hi, g_rp_lo, g_rp_bid); WatchReset(g_rp_wb); }
+}
+
+// ทดสอบ Stop ตามน้ำ: จบสถานะ (เอาออกจากรายการรอ)
+void HedgeDone(int i, int state) {
+   g_rt[i].hg_state = state;
+   int n = ArraySize(g_hg_live), w = 0;
+   for(int j = 0; j < n; j++) if(g_hg_live[j] != i) g_hg_live[w++] = g_hg_live[j];
+   ArrayResize(g_hg_live, w);
+}
+
+// ทุก tick: Stop ตามน้ำถูกชน → เปิดไม้สมมติ (SL = ราคาเข้า ∓ InpHedgeSL_Pts) / หมดอายุ
+void HedgeTick(long msc, double bid, double ask) {
+   for(int j = ArraySize(g_hg_live) - 1; j >= 0; j--) {
+      if(j >= ArraySize(g_hg_live)) continue;
+      int i = g_hg_live[j];
+      if(msc >= g_rt[i].hg_exp) { HedgeDone(i, HG_EXPIRED); continue; }
+      int d = g_rt[i].dir;   // ทิศไม้สวน → ไม้ตามน้ำ = −d
+      if(d == -1 ? (ask < g_rt[i].hg_price) : (bid > g_rt[i].hg_price)) continue;
+      double px = (d == -1) ? ask : bid;
+      g_rt[i].hg_vt = VTOpen(-d, NormalizeLot(InpLot), px + d * PtsToPrice(InpHedgeSL_Pts), msc, bid, ask);
+      HedgeDone(i, HG_FILLED);
+   }
 }
 
 // ไม้ที่ถืออยู่: SL / TP / โล่ ด้วยราคา tick ปัจจุบัน
@@ -1883,6 +1991,7 @@ void ReplayTick(const MqlTick &tk) {
    datetime t   = (datetime)(msc / 1000);
 
    ReplayTimeEvents(msc);                 // A) เหตุการณ์ตามเวลาด้วยราคาเดิม (ตัด 60 วิ / ยิงหลังครบเวลาเฝ้า)
+   VTStepTime(msc);
    if(InpObserveMode) ObsTimeEvents(msc);
    if(!ReplayBarFor(t)) return;           // B) แท่งของ tick นี้
    if(g_rp_hi <= 0.0 || bid > g_rp_hi) g_rp_hi = bid;
@@ -1894,15 +2003,18 @@ void ReplayTick(const MqlTick &tk) {
    if(zok) { g_rp_zr = zr; g_rp_zs = zs; }
 
    if(g_rt_open >= 0) ReplayManageTick(msc, bid, ask);   // C) ไม้ที่ถืออยู่
+   VTStepTick(msc, bid, ask);                            //    ไม้สมมติ (ทดสอบตามน้ำ / โหมดสังเกต)
+   HedgeTick(msc, bid, ask);
 
    // D) เฝ้าค่าสุดขั้ว: ไม่มีไม้ + เลยนาทีแรก + ไม่ได้พัก (ขึ้นแท่งใหม่ล้างการเฝ้า)
    bool idle  = (g_rt_open < 0);
    bool early = InBarStartDelay(t);
    bool cool  = CoolActive(g_rp_cool, t);
    if(!idle || early || cool || !zok || g_rp_bar_chg) { WatchReset(g_rp_ws); WatchReset(g_rp_wb); }
+   if(zok) { PullBlockUpdate(g_rp_pbs, -1, zr, zs, bid); PullBlockUpdate(g_rp_pbb, 1, zr, zs, bid); }
    if(idle && !early && !cool && zok) {
-      WatchUpdate(g_rp_ws, -1, zr, zs, msc, bid);
-      WatchUpdate(g_rp_wb,  1, zr, zs, msc, bid);
+      if(!g_rp_pbs.on) WatchUpdate(g_rp_ws, -1, zr, zs, msc, bid);
+      if(!g_rp_pbb.on) WatchUpdate(g_rp_wb,  1, zr, zs, msc, bid);
    }
 
    // E) โหมดสังเกต: ระบบแยก (ไม้สมมติ) — เฝ้าเมื่อไม่มีการสังเกตค้าง + เลยนาทีแรก, ไม่มี Cool down
@@ -2060,6 +2172,18 @@ void VTTime(int k, long msc, double bid, double ask) {
    else if(cut < wk && cut <= msc)  VTClose(k, cut, px, RX_CUT);
 }
 
+// ไม้สมมติทั้งหมด (ทดสอบตามน้ำ / โหมดสังเกต): SL / TP / โล่ ทุก tick, ตัดจบ / ปิดสัปดาห์ ตามเวลา
+void VTStepTick(long msc, double bid, double ask) {
+   for(int j = ArraySize(g_vt_live) - 1; j >= 0; j--)
+      if(j < ArraySize(g_vt_live)) VTTick(g_vt_live[j], msc, bid, ask);
+}
+
+void VTStepTime(long msc) {
+   if(!g_rp_have) return;
+   for(int j = ArraySize(g_vt_live) - 1; j >= 0; j--)
+      if(j < ArraySize(g_vt_live)) VTTime(g_vt_live[j], msc, g_rp_bid, g_rp_ask);
+}
+
 double VTPts(int k) {
    if(k < 0 || !g_vt[k].used || g_vt[k].open) return 0.0;
    return PriceToPts((g_vt[k].dir == -1) ? (g_vt[k].p_in - g_vt[k].p_out) : (g_vt[k].p_out - g_vt[k].p_in));
@@ -2126,8 +2250,6 @@ void ObsDecide(long msc) {
 // เหตุการณ์ตามเวลา (เรียกก่อนประมวลผล tick ใหม่ / ทุกวินาทีหลังเล่นซ้ำถึงปัจจุบัน)
 void ObsTimeEvents(long msc) {
    if(!g_rp_have) return;
-   for(int j = ArraySize(g_vt_live) - 1; j >= 0; j--)
-      if(j < ArraySize(g_vt_live)) VTTime(g_vt_live[j], msc, g_rp_bid, g_rp_ask);
    if(g_ob_active >= 0 && msc >= g_ob[g_ob_active].end_msc) ObsDecide(g_ob[g_ob_active].end_msc);
    if(g_ob_active < 0) {
       if(WatchReady(g_ob_ws, msc))      ObsFire(-1, WatchDeadline(g_ob_ws));
@@ -2155,8 +2277,6 @@ void ObsBarClosed(int i, long msc, double bid, double ask) {
 
 // ทุก tick: ไม้สมมติ + ยอดไส้ / ระยะทะลุ / ไม้ตามน้ำ ของการสังเกตที่ค้างอยู่
 void ObsTick(long msc, double bid, double ask) {
-   for(int j = ArraySize(g_vt_live) - 1; j >= 0; j--)
-      if(j < ArraySize(g_vt_live)) VTTick(g_vt_live[j], msc, bid, ask);
    int i = g_ob_active;
    if(i < 0) return;
    int d = g_ob[i].dir;
@@ -2391,7 +2511,13 @@ void DrawReplayTrade(int i) {
                            (g_rt[i].f_day_ok ? StringFormat("%+.0f", g_rt[i].f_day_brk) : "-"),
                            (g_rt[i].f_pday_ok ? StringFormat("%+.0f", g_rt[i].f_pday_brk) : "-"),
                            g_rt[i].f_hour, g_rt[i].f_min, g_rt[i].f_gmt_hour);
-   tipText += StringFormat("\nห่างปลายไส้ %.0f จุด", gap);
+   tipText += StringFormat("\nห่างปลายไส้ %.0f จุด | ถอยจากยอดไส้ตอนเข้า %.0f จุด | SL ตอนเข้า %s", gap, g_rt[i].pull, DoubleToString(g_rt[i].sl0, _Digits));
+   if(g_rt[i].hg_state != HG_NONE) {
+      int k = g_rt[i].hg_vt;
+      tipText += StringFormat("\nStop ตามน้ำ @ %s: %s", DoubleToString(g_rt[i].hg_price, _Digits),
+                              (k >= 0 && g_vt[k].used && !g_vt[k].open) ? StringFormat("%s %+.0f จุด $%+.2f", ReplayReasonName(g_vt[k].reason), VTPts(k), VTUsd(k))
+                                                                         : HedgeCode(i));
+   }
    if(!open)
       tipText += StringFormat("\nออก %s @ %s (%s) | %+.0f จุด | $%+.2f | ถือ %d วินาที",
                               ReplayReasonName(g_rt[i].reason), DoubleToString(g_rt[i].p_out, _Digits),
@@ -2403,7 +2529,7 @@ void DrawReplayTrade(int i) {
    if(tip > 0.0)  ObjectSetString(0, ng, OBJPROP_TOOLTIP, tipText);
    if(!open)      ObjectSetString(0, nl, OBJPROP_TOOLTIP, tipText);
 
-   g_rt[i].drawn_final = (!open && shift > 0);
+   g_rt[i].drawn_final = (!open && shift > 0 && ReplayRowDone(i));
 }
 
 void DrawReplayBlocked(int k) {
@@ -2483,11 +2609,40 @@ string ReplayStatsText() {
                      cnt[1], usd_st[1], cnt[2], usd_st[2], cnt[3], usd_st[3], ArraySize(g_rc), tail);
    if(InpReplayCSV && g_rp_csv_rows >= 0)
       s += StringFormat("\n   📄 CSV: MQL5\\Files\\%s (%d ไม้)", ReplayCSVName(), g_rp_csv_rows);
+   if(InpHedgeTest) {
+      int    hp = 0, hf = 0;
+      double hu = 0.0;
+      for(int i = 0; i < ArraySize(g_rt); i++) {
+         if(g_rt[i].hg_state == HG_NONE) continue;
+         hp++;
+         if(g_rt[i].hg_state == HG_FILLED && g_rt[i].hg_vt >= 0 && g_vt[g_rt[i].hg_vt].used) { hf++; hu += VTUsd(g_rt[i].hg_vt); }
+      }
+      s += StringFormat("\n   🧪 ทดสอบ Stop ตามน้ำ (SL+%.0f, SL ตามน้ำ %.0f): วาง %d | ถูกชน %d ไม้ $%+.2f | รวมกับไม้หลัก $%+.2f (ไม้สมมติ)",
+                        InpHedgeOffset_Pts, InpHedgeSL_Pts, hp, hf, hu, usd + hu);
+   }
    s += ObsStatsText();
    return s;
 }
 
 string ReplayCSVName() { return "7LCEA_Replay_" + _Symbol + ".csv"; }
+
+string HedgeCode(int i) {
+   switch(g_rt[i].hg_state) {
+      case HG_PENDING: return "PENDING";
+      case HG_CANCEL:  return "CANCELLED";
+      case HG_EXPIRED: return "EXPIRED";
+      case HG_FILLED:
+         if(g_rt[i].hg_vt >= 0 && !g_vt[g_rt[i].hg_vt].used) return (g_vt[g_rt[i].hg_vt].flag == 2 ? "INVALID_SL" : "BLOCKED");
+         return "FILLED";
+   }
+   return "NONE";
+}
+
+// แถวพร้อมเขียน: ไม้หลักปิดแล้ว + Stop ตามน้ำจบสถานะ (ไม้สมมติปิดแล้ว)
+bool ReplayRowDone(int i) {
+   if(g_rt[i].reason == RX_OPEN || g_rt[i].hg_state == HG_PENDING) return false;
+   return (g_rt[i].hg_vt < 0 || !g_vt[g_rt[i].hg_vt].open);
+}
 
 string ReplayReasonCode(int r) {
    switch(r) {
@@ -2510,10 +2665,11 @@ void ReplayWriteCSV() {
                       "f2_prev1_zreg,f2_prev1_zsma,f2_prev2_zreg,f2_prev2_zsma,f2_prev3_zreg,f2_prev3_zsma," +
                       "f3_slope_pts_per_bar,f3_slope_div_sigma,f5_day_break_pts,f5_prevday_break_pts," +
                       "f7_server_hour,f7_server_min,f7_gmt_hour,f7_weekday,f9_zreg_minus_zsma," +
-                      "time_out,exit,hold_sec,pnl_pts,usd,mfe_pts,mae_pts\r\n");
+                      "time_out,exit,hold_sec,pnl_pts,usd,mfe_pts,mae_pts," +
+                      "sl_initial,pull_at_entry_pts,hedge_status,hedge_stop_price," + VTCsvHead("hedge") + "\r\n");
    int rows = 0;
    for(int i = 0; i < ArraySize(g_rt); i++) {
-      if(g_rt[i].reason == RX_OPEN) continue;
+      if(!ReplayRowDone(i)) continue;
       string ln = StringFormat("%s,%s,%d,%d,%.2f,%s,%s,%s,%.0f,%.3f,%.3f,%.3f,%.3f,",
                                TimeToString((datetime)(g_rt[i].msc_in / 1000), TIME_DATE|TIME_SECONDS),
                                (g_rt[i].dir == -1 ? "SELL" : "BUY"), g_rt[i].stage, g_rt[i].max_tier, g_rt[i].lot,
@@ -2526,10 +2682,13 @@ void ReplayWriteCSV() {
       ln += (g_rt[i].f_day_ok  ? StringFormat("%.0f", g_rt[i].f_day_brk)  : "") + ",";
       ln += (g_rt[i].f_pday_ok ? StringFormat("%.0f", g_rt[i].f_pday_brk) : "") + ",";
       ln += StringFormat("%d,%d,%d,%d,%.3f,", g_rt[i].f_hour, g_rt[i].f_min, g_rt[i].f_gmt_hour, g_rt[i].f_dow, g_rt[i].f_zdiff);
-      ln += StringFormat("%s,%s,%d,%.0f,%.2f,%.0f,%.0f\r\n",
+      ln += StringFormat("%s,%s,%d,%.0f,%.2f,%.0f,%.0f,",
                          TimeToString((datetime)(g_rt[i].msc_out / 1000), TIME_DATE|TIME_SECONDS), ReplayReasonCode(g_rt[i].reason),
                          (int)((g_rt[i].msc_out - g_rt[i].msc_in) / 1000), g_rt[i].pnl, g_rt[i].usd,
                          PriceToPts(g_rt[i].mfe), PriceToPts(g_rt[i].mae));
+      ln += StringFormat("%s,%.0f,%s,%s,", DoubleToString(g_rt[i].sl0, _Digits), g_rt[i].pull, HedgeCode(i),
+                         (g_rt[i].hg_state == HG_NONE ? "" : DoubleToString(g_rt[i].hg_price, _Digits)));
+      ln += VTCsv(g_rt[i].hg_vt) + "\r\n";
       FileWriteString(h, ln);
       rows++;
    }
@@ -2573,13 +2732,18 @@ void ReplayStep() {
    }
    if(!g_rp_caught && to >= now_msc - 2000) g_rp_caught = true;
    if(g_rp_caught) ReplayTimeEvents(now_msc);   // เวลาผ่านไปโดยไม่มี tick (ตัด 60 วิ / ยิงหลังครบเวลาเฝ้า)
+   if(g_rp_caught) VTStepTime(now_msc);
    if(g_rp_caught && InpObserveMode) ObsTimeEvents(now_msc);
 
    g_rp_status = g_rp_caught
                  ? StringFormat("✅ ครบแล้ว + เดินต่อแบบสด (%I64d ticks)", g_rp_ticks)
                  : StringFormat("⏳ กำลังเล่นซ้ำ ถึง %s (%I64d ticks)", TimeToString((datetime)(g_rp_cursor / 1000), TIME_DATE|TIME_MINUTES), g_rp_ticks);
    ReplayDraw();
-   if(InpReplayCSV && g_rp_caught && g_rp_closed != g_rp_csv_rows) ReplayWriteCSV();
+   if(InpReplayCSV && g_rp_caught) {
+      int done = 0;
+      for(int i = 0; i < ArraySize(g_rt); i++) if(ReplayRowDone(i)) done++;
+      if(done != g_rp_csv_rows) ReplayWriteCSV();
+   }
    if(InpObserveMode && InpReplayCSV && g_rp_caught) {
       int fin = 0;
       for(int i = 0; i < ArraySize(g_ob); i++) if(ObsFinished(i)) fin++;
@@ -2775,6 +2939,9 @@ string WatchText(const WatchState &w, bool is_sell, long now_msc) {
    if(OurPositionsTotal() > 0) return "⏸️ มีไม้ถืออยู่ (ครั้งละ 1 ไม้)";
    if(CoolActive(g_cool, t))   return StringFormat("❄️ Cool down อีก %s", FormatDuration((long)(g_cool.until - t)));
    if(InBarStartDelay(t))      return StringFormat("⏳ %d วิแรกของแท่ง (ยังไม่เฝ้า)", InpBarStartDelay_Sec);
+   bool blk = is_sell ? g_pb_s.on : g_pb_b.on;
+   if(blk) return StringFormat("🚫 ทิ้งสัญญาณแล้ว (ถอยไม่ถึง) → รอ Z กลับต่ำกว่า T1 หรือราคาทะลุ %s (ขาใหม่)",
+                               DoubleToString(is_sell ? g_pb_s.level : g_pb_b.level, _Digits));
    if(w.active) {
       double left = (double)(WatchDeadline(w) - now_msc) / 1000.0;
       if(left < 0.0) left = 0.0;
@@ -2782,7 +2949,8 @@ string WatchText(const WatchState &w, bool is_sell, long now_msc) {
       string tw  = (w.tier >= 3) ? "ยิงทันที" : StringFormat("รอ %d วิ", (w.tier == 2 ? InpT2_Sec : InpT1_Sec));
       double pull = PullPts(dir, g_bar0_hi, g_bar0_lo, SymbolInfoDouble(_Symbol, SYMBOL_BID), SymbolInfoDouble(_Symbol, SYMBOL_ASK));
       string ps   = (InpMinPull_Pts > 0.0) ? StringFormat(" | ถอยจากยอดไส้ %.0f / %.0f จุด%s", pull, InpMinPull_Pts, (pull >= InpMinPull_Pts ? " ✓" : "")) : "";
-      string wait = (left <= 0.0 && InpMinPull_Pts > 0.0 && pull < InpMinPull_Pts) ? "ครบเวลาแล้ว → รอราคาถอยถึงระยะ" : StringFormat("ยิงในอีก %.1f วิ", left);
+      string wait = (left <= 0.0 && InpMinPull_Pts > 0.0 && pull < InpMinPull_Pts) ? "ครบเวลาแล้ว → รอราคาถอยถึงระยะ"
+                  : StringFormat("ครบเวลาในอีก %.1f วิ%s", left, (InpPullMode == PULL_AT_TIMER && InpMinPull_Pts > 0.0 ? " (ถอยไม่ถึงตอนนั้น = ทิ้ง)" : ""));
       return StringFormat("👀 เฝ้า %s (Z %s %.2f %s, Lot %.2f) | สุดขั้ว R %+.2f / S %+.2f | ไม่มีค่าใหม่มา %.1f วิ → %s%s",
                           StageTag(w.tier), (is_sell ? "≥" : "≤"), TierZ(dir, w.tier) * (is_sell ? 1.0 : -1.0), tw, TierLot(w.tier),
                           w.ext_r, w.ext_s, (double)(now_msc - w.last_new) / 1000.0, wait, ps);
@@ -2848,7 +3016,7 @@ void UpdateDashboard(int ts, datetime now) {
    string news_str = NextNewsText(now);
 
    long   now_msc = MathMax(g_last_tick_msc, (long)now * 1000);
-   string msg = StringFormat("=== 📊 7-Lines Counter EA v11.20 (เข้าไม้: %s | T1 %d วิ / T2 %d วิ / T3 ทันที | ถอยจากยอดไส้ ≥ %.0f | Z หลุด T1 = ยกเลิก | SL = High/Low แท่ง ± %.0f) ===\n",
+   string msg = StringFormat("=== 📊 7-Lines Counter EA v11.30 (เข้าไม้: %s | T1 %d วิ / T2 %d วิ / T3 ทันที | ถอยจากยอดไส้ ≥ %.0f | Z หลุด T1 = ยกเลิก | SL = High/Low แท่ง ± %.0f) ===\n",
                              LogicName(), InpT1_Sec, InpT2_Sec, InpMinPull_Pts, InpSLBeyond_Pts);
    msg += StringFormat("Z (%s, %d) : %s\n", EnumToString(InpZ_Timeframe), InpZ_Period, z_str);
    msg += StringFormat("Z แท่งที่เพิ่งปิด : R %+.2f / S %+.2f%s\n", g_prev_close_zr, g_prev_close_zs, (news_str == "" ? "" : " | " + news_str));
@@ -2878,7 +3046,7 @@ int OnInit() {
    if(InpBarZBars < 1 || InpBarZBars > 20000) { Print("❌ InpBarZBars ต้องอยู่ระหว่าง 1-20000"); return(INIT_PARAMETERS_INCORRECT); }
    if(InpReplayDays < 1 || InpReplayDays > 60) { Print("❌ InpReplayDays ต้องอยู่ระหว่าง 1-60"); return(INIT_PARAMETERS_INCORRECT); }
    if(InpObsWindow_Min < 0 || InpObsWindow_Min > 15 || InpObsTrend1_Pts <= 0.0 || InpObsTrend2_Pts <= 0.0 || InpObsTrend3_Pts <= 0.0 ||
-      InpObsCloseNear_Pts < 0.0 || InpMinPull_Pts < 0.0) {
+      InpObsCloseNear_Pts < 0.0 || InpMinPull_Pts < 0.0 || InpHedgeOffset_Pts < 0.0 || InpHedgeSL_Pts <= 0.0 || InpHedgeLife_Min < 0) {
       Print("❌ โหมดสังเกต / ระยะถอยจากยอดไส้ ไม่ถูกต้อง (ช่วงสังเกต 0-15 นาที, ระยะต้องไม่ติดลบ)");
       return(INIT_PARAMETERS_INCORRECT);
    }
@@ -2930,6 +3098,7 @@ int OnInit() {
 
    WatchReset(g_wsell);
    WatchReset(g_wbuy);
+   g_pb_s.on = false; g_pb_b.on = false;
    g_bar_changed   = false;
    g_last_tick_msc = 0;
    g_zc.ok         = false;
