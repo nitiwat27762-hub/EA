@@ -16,7 +16,10 @@ indicator EA XAUUSD
 
 | ไฟล์ | เวอร์ชัน | รายละเอียด |
 |---|---|---|
-| `Experts/Seven_Lines_Counter_EA.mq5` | 11.31 | EA สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว (XAUUSD, บัญชี Hedging) |
+| `Experts/Seven_Lines_Counter_EA.mq5` | 11.32 | EA สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว (XAUUSD, บัญชี Hedging) |
+
+### Counter EA v11.32
+- ทดสอบ Stop ตามน้ำ: SL ของไม้ตามน้ำสมมติ = ราคาเปิดของแท่งสัญญาณ (แทนระยะคงที่ 1,500, ลบ `InpHedgeSL_Pts`) + คอลัมน์ `bar_open`
 
 ### Counter EA v11.31
 - ทดสอบ Stop ตามน้ำ (ไม้สมมติใน Replay) วางกับ**ทุกสัญญาณที่ผ่าน Z ของ T1-T3** ไม่ต้องผ่านระยะถอย:

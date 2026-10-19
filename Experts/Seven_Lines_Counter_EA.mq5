@@ -37,7 +37,7 @@
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "11.31"
+#property version     "11.32"
 #property description "สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว สำหรับ XAUUSD (บัญชี Hedging)"
 
 #include <Trade\Trade.mqh>
@@ -126,7 +126,6 @@ input double          InpObsTrend2_Pts     = 4000.0;     // โหมดสั�
 input double          InpObsTrend3_Pts     = 6000.0;     // โหมดสังเกต: ระยะเทรนด์ชุดที่ 3
 input bool            InpHedgeTest         = true;       // 🧪 Tick Replay: ทดสอบ Stop ตามน้ำที่ SL ของทุกสัญญาณ T1-T3 + ระยะ (ไม้สมมติ ไม่เทรดจริง)
 input double          InpHedgeOffset_Pts   = 500.0;      // ทดสอบตามน้ำ: วาง Stop เลย SL ของไม้สวนไปกี่จุด
-input double          InpHedgeSL_Pts       = 1500.0;     // ทดสอบตามน้ำ: SL ของไม้ตามน้ำห่างจากราคาเข้า (จุด)
 input int             InpHedgeLife_Min     = 30;         // ทดสอบตามน้ำ: Stop มีอายุกี่นาทีหลังสัญญาณ / หลังราคาแตะระดับ SL ของไม้สวน
 input double          InpObsCloseNear_Pts  = 1000.0;     // โหมดสังเกต (สรุปบน Dashboard): แท่งสัญญาณปิดห่าง P ไม่เกินเท่านี้ (หรือเลย P) = เทรนด์
 input bool            InpShowNewsHistory   = true;       // แสดงช่วงข่าวบนกราฟ (แสดงอย่างเดียว ไม่มีผลกับการเทรด, ใช้ไม่ได้ใน Tester)
@@ -1645,6 +1644,7 @@ struct RHedge {
    double pull;     // ระยะถอยจากยอดไส้ตอนสัญญาณ (จุด)
    double sl_lvl;   // ระดับ SL ของไม้สวน (ยอดไส้ ± InpSLBeyond_Pts)
    double stop;     // ราคา Stop ตามน้ำ (เลย SL ไป InpHedgeOffset_Pts)
+   double bar_open; // ราคาเปิดของแท่งสัญญาณ = SL ของไม้ตามน้ำ
    bool   touched;  // ราคาแตะระดับ SL แล้ว
    long   exp;      // หมดอายุ (msc)
    int    state;    // HG_*
@@ -1956,6 +1956,7 @@ int HedgeAdd(int dir, int tier, bool fired, int rt, long msc) {
    g_hg[h].pull    = PullPts(dir, g_rp_hi, g_rp_lo, g_rp_bid, g_rp_ask);
    g_hg[h].sl_lvl  = (rt >= 0) ? g_rt[rt].sl0 : SLPrice(dir, hi, lo);
    g_hg[h].stop    = g_hg[h].sl_lvl - dir * PtsToPrice(InpHedgeOffset_Pts);
+   g_hg[h].bar_open = (g_rp_b >= 0 && g_rp_b < ArraySize(g_rr)) ? g_rr[g_rp_b].open : lo;
    g_hg[h].touched = false;
    g_hg[h].exp     = msc + (long)InpHedgeLife_Min * 60000;
    g_hg[h].state   = HG_PENDING;
@@ -1974,7 +1975,7 @@ void HedgeDone(int h, int state) {
    ArrayResize(g_hg_live, w);
 }
 
-// ทุก tick: แตะระดับ SL → ต่ออายุ, ชน Stop → เปิดไม้ตามน้ำสมมติ (SL = ราคาเข้า ∓ InpHedgeSL_Pts), หมดอายุ → ยกเลิก
+// ทุก tick: แตะระดับ SL → ต่ออายุ, ชน Stop → เปิดไม้ตามน้ำสมมติ (SL = ราคาเปิดของแท่งสัญญาณ), หมดอายุ → ยกเลิก
 void HedgeTick(long msc, double bid, double ask) {
    for(int j = ArraySize(g_hg_live) - 1; j >= 0; j--) {
       if(j >= ArraySize(g_hg_live)) continue;
@@ -1985,8 +1986,7 @@ void HedgeTick(long msc, double bid, double ask) {
          g_hg[h].exp     = msc + (long)InpHedgeLife_Min * 60000;
       }
       if(d == -1 ? (ask >= g_hg[h].stop) : (bid <= g_hg[h].stop)) {
-         double px = (d == -1) ? ask : bid;
-         g_hg[h].vt = VTOpen(-d, NormalizeLot(InpLot), px + d * PtsToPrice(InpHedgeSL_Pts), msc, bid, ask);
+         g_hg[h].vt = VTOpen(-d, NormalizeLot(InpLot), g_hg[h].bar_open, msc, bid, ask);
          HedgeDone(h, HG_FILLED);
       }
       else if(msc >= g_hg[h].exp) HedgeDone(h, HG_EXPIRED);
@@ -2018,14 +2018,15 @@ void HedgeWriteCSV(int rows) {
    string fn = HedgeCSVName();
    int fh = FileOpen(fn, FILE_WRITE | FILE_TXT | FILE_ANSI);
    if(fh == INVALID_HANDLE) { PrintFormat("⚠️ เขียนไฟล์ %s ไม่สำเร็จ (error %d)", fn, GetLastError()); return; }
-   FileWriteString(fh, "sig_time,counter_side,tier,source,pull_pts,sl_level,stop_price,touched_sl,status," +
+   FileWriteString(fh, "sig_time,counter_side,tier,source,pull_pts,sl_level,stop_price,bar_open,touched_sl,status," +
                        "main_time,main_exit,main_pnl_pts,main_usd," + VTCsvHead("hedge") + "\r\n");
    for(int h = 0; h < ArraySize(g_hg); h++) {
       if(!HedgeFinished(h)) continue;
-      string ln = StringFormat("%s,%s,%d,%s,%.0f,%s,%s,%d,%s,",
+      string ln = StringFormat("%s,%s,%d,%s,%.0f,%s,%s,%s,%d,%s,",
                                TimeToString((datetime)(g_hg[h].msc / 1000), TIME_DATE|TIME_SECONDS),
                                (g_hg[h].dir == -1 ? "SELL" : "BUY"), g_hg[h].tier, (g_hg[h].fired ? "FIRED" : "DISCARDED"),
                                g_hg[h].pull, DoubleToString(g_hg[h].sl_lvl, _Digits), DoubleToString(g_hg[h].stop, _Digits),
+                               DoubleToString(g_hg[h].bar_open, _Digits),
                                (g_hg[h].touched ? 1 : 0), HedgeCode(h));
       int r = g_hg[h].rt;
       if(r >= 0 && g_rt[r].reason != RX_OPEN)
@@ -2706,8 +2707,8 @@ string ReplayStatsText() {
          int k = g_hg[h].vt;
          if(k >= 0 && g_vt[k].used && !g_vt[k].open) { nf[src]++; nu[src] += VTUsd(k); }
       }
-      s += StringFormat("\n   🧪 Stop ตามน้ำ (SL+%.0f, SL ตามน้ำ %.0f, ไม้สมมติ): ยิงจริง วาง %d ชน %d $%+.2f | ถูกทิ้ง วาง %d ชน %d $%+.2f | รวม $%+.2f",
-                        InpHedgeOffset_Pts, InpHedgeSL_Pts, np[0], nf[0], nu[0], np[1], nf[1], nu[1], nu[0] + nu[1]);
+      s += StringFormat("\n   🧪 Stop ตามน้ำ (SL+%.0f, SL ตามน้ำ = ราคาเปิดแท่งสัญญาณ, ไม้สมมติ): ยิงจริง วาง %d ชน %d $%+.2f | ถูกทิ้ง วาง %d ชน %d $%+.2f | รวม $%+.2f",
+                        InpHedgeOffset_Pts, np[0], nf[0], nu[0], np[1], nf[1], nu[1], nu[0] + nu[1]);
       if(g_hg_csv_rows >= 0) s += StringFormat("\n   📄 CSV: MQL5\\Files\\%s", HedgeCSVName());
    }
    s += ObsStatsText();
@@ -3080,7 +3081,7 @@ void UpdateDashboard(int ts, datetime now) {
    string news_str = NextNewsText(now);
 
    long   now_msc = MathMax(g_last_tick_msc, (long)now * 1000);
-   string msg = StringFormat("=== 📊 7-Lines Counter EA v11.31 (เข้าไม้: %s | T1 %d วิ / T2 %d วิ / T3 ทันที | ถอยจากยอดไส้ ≥ %.0f | Z หลุด T1 = ยกเลิก | SL = High/Low แท่ง ± %.0f) ===\n",
+   string msg = StringFormat("=== 📊 7-Lines Counter EA v11.32 (เข้าไม้: %s | T1 %d วิ / T2 %d วิ / T3 ทันที | ถอยจากยอดไส้ ≥ %.0f | Z หลุด T1 = ยกเลิก | SL = High/Low แท่ง ± %.0f) ===\n",
                              LogicName(), InpT1_Sec, InpT2_Sec, InpMinPull_Pts, InpSLBeyond_Pts);
    msg += StringFormat("Z (%s, %d) : %s\n", EnumToString(InpZ_Timeframe), InpZ_Period, z_str);
    msg += StringFormat("Z แท่งที่เพิ่งปิด : R %+.2f / S %+.2f%s\n", g_prev_close_zr, g_prev_close_zs, (news_str == "" ? "" : " | " + news_str));
@@ -3110,7 +3111,7 @@ int OnInit() {
    if(InpBarZBars < 1 || InpBarZBars > 20000) { Print("❌ InpBarZBars ต้องอยู่ระหว่าง 1-20000"); return(INIT_PARAMETERS_INCORRECT); }
    if(InpReplayDays < 1 || InpReplayDays > 60) { Print("❌ InpReplayDays ต้องอยู่ระหว่าง 1-60"); return(INIT_PARAMETERS_INCORRECT); }
    if(InpObsWindow_Min < 0 || InpObsWindow_Min > 15 || InpObsTrend1_Pts <= 0.0 || InpObsTrend2_Pts <= 0.0 || InpObsTrend3_Pts <= 0.0 ||
-      InpObsCloseNear_Pts < 0.0 || InpMinPull_Pts < 0.0 || InpHedgeOffset_Pts < 0.0 || InpHedgeSL_Pts <= 0.0 || InpHedgeLife_Min < 0) {
+      InpObsCloseNear_Pts < 0.0 || InpMinPull_Pts < 0.0 || InpHedgeOffset_Pts < 0.0 || InpHedgeLife_Min < 0) {
       Print("❌ โหมดสังเกต / ระยะถอยจากยอดไส้ ไม่ถูกต้อง (ช่วงสังเกต 0-15 นาที, ระยะต้องไม่ติดลบ)");
       return(INIT_PARAMETERS_INCORRECT);
    }
