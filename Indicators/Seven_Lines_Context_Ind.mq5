@@ -17,11 +17,13 @@
 //
 // 🏷️ ป้ายแนวนอน: แท่งที่ Z_reg หรือ Z_SMA ที่ High / Low เกิน ±2.00 → แสดง Z ทั้ง 6 แบบ
 //    ป้ายที่อยู่ใกล้กันถูกเรียงเป็นชั้นตามความกว้างตัวอักษรจริงบนจอ → ไม่ซ้อนกัน (จัดใหม่เมื่อซูม / เลื่อนกราฟ)
+//    เส้นโยงจากปลายไส้ (High / Low) ของแท่งนั้นขึ้น / ลงไปถึงป้าย
+//    ใช้ได้ทุก TF (คำนวณบน TF ของกราฟ): หน้าต่าง / Speed / แท่งสถิติ นับเป็นจำนวนแท่งของ TF นั้น
 // 📊 ตารางสถิติ (มุมล่างซ้าย): ทุกแท่งในประวัติที่ |Z| > 2.00 แยกตามนิยาม
 //    → % ที่ราคากลับไปแตะเส้นภายใน 8 แท่ง + ระยะไปต่อสูงสุดเฉลี่ยใน 8 แท่ง (ใช้เทียบว่านิยามไหนดีดกลับจริง)
 //
 #property copyright   "Commander's Quant System"
-#property version     "2.10"
+#property version     "2.20"
 #property description "Z หลายนิยาม (ถดถอย / SMA / ถดถอยโค้ง / Median / Speed / EMA) + ป้ายค่า Z + สถิติการดีดกลับ"
 #property indicator_chart_window
 #property indicator_buffers 17
@@ -100,6 +102,7 @@ input double InpLabelZ            = 2.00;    // ขึ้นป้ายเม�
 input int    InpLabelBars         = 0;       // ย้อนหลังกี่แท่ง (0 = ทั้งหมด)
 input int    InpLabelFontSize     = 7;       // ขนาดตัวอักษร
 input int    InpLabelOffset_Px    = 6;       // ระยะห่างจากไส้เทียน (พิกเซล)
+input bool   InpShowLeader        = true;    // เส้นโยงจากปลายไส้ของแท่งนั้นถึงป้าย
 
 input group "=== ตารางสถิติ ==="
 input bool   InpShowStats         = true;    // แสดงตารางสถิติการดีดกลับ (มุมล่างซ้าย)
@@ -253,6 +256,7 @@ int LabelFind(int idx, int side) {
 
 void LabelRemove(int k) {
    ObjectDelete(0, g_lb_name[k]);
+   ObjectDelete(0, g_lb_name[k] + "_K");
    int n = ArraySize(g_lb_idx);
    for(int q = k; q < n - 1; q++) {
       g_lb_idx[q] = g_lb_idx[q + 1]; g_lb_side[q] = g_lb_side[q + 1];
@@ -298,6 +302,22 @@ void UpdateLabel(int i, const datetime &time[], const double &high[], const doub
       }
       ObjectSetString(0, name, OBJPROP_TEXT, txt);
       ObjectSetString(0, name, OBJPROP_TOOLTIP, tip);
+      if(InpShowLeader) {   // เส้นโยง: จุดที่ 0 = ปลายไส้ของแท่งนี้, จุดที่ 1 = ตำแหน่งป้าย (ตั้งตอนจัดชั้น)
+         string kn = name + "_K";
+         if(ObjectFind(0, kn) < 0) {
+            ObjectCreate(0, kn, OBJ_TREND, 0, time[i], P, time[i], P);
+            ObjectSetInteger(0, kn, OBJPROP_COLOR, (side == 0) ? InpClrLabelSell : InpClrLabelBuy);
+            ObjectSetInteger(0, kn, OBJPROP_STYLE, STYLE_DOT);
+            ObjectSetInteger(0, kn, OBJPROP_WIDTH, 1);
+            ObjectSetInteger(0, kn, OBJPROP_RAY_RIGHT, false);
+            ObjectSetInteger(0, kn, OBJPROP_RAY_LEFT, false);
+            ObjectSetInteger(0, kn, OBJPROP_BACK, true);
+            ObjectSetInteger(0, kn, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, kn, OBJPROP_HIDDEN, true);
+         }
+         ObjectMove(0, kn, 0, time[i], P);
+         ObjectSetString(0, kn, OBJPROP_TOOLTIP, tip);
+      }
 
       uint tw = 0, th = 0;
       TextSetFont("Arial", -InpLabelFontSize * 10);
@@ -337,8 +357,11 @@ void PlaceCluster(const int &cl[], int cn, int side, double bar_px, double ppx, 
    for(int q = 0; q < cn; q++) {
       double off = (InpLabelOffset_Px + rows[q] * row_px) * ppx;
       double y   = (side == 0) ? base + off : base - off;
-      if(MathAbs(ObjectGetDouble(0, g_lb_name[cl[q]], OBJPROP_PRICE) - y) > _Point)
-         ObjectSetDouble(0, g_lb_name[cl[q]], OBJPROP_PRICE, y);
+      string nm = g_lb_name[cl[q]];
+      if(MathAbs(ObjectGetDouble(0, nm, OBJPROP_PRICE) - y) > _Point) {
+         ObjectSetDouble(0, nm, OBJPROP_PRICE, y);
+         if(InpShowLeader) ObjectMove(0, nm + "_K", 1, (datetime)ObjectGetInteger(0, nm, OBJPROP_TIME), y);
+      }
    }
 }
 
