@@ -47,7 +47,13 @@ indicator EA XAUUSD
 
 | ไฟล์ | เวอร์ชัน | รายละเอียด |
 |---|---|---|
-| `Experts/Seven_Lines_Counter_EA.mq5` | 12.41 | EA สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว (XAUUSD, บัญชี Hedging) |
+| `Experts/Seven_Lines_Counter_EA.mq5` | 12.42 | EA สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว (XAUUSD, บัญชี Hedging) |
+
+### Counter EA v12.42 — แก้นิยาม Z_float
+- Z_float = (ราคาเปิดแท่ง − SMA ตอนเปิดแท่ง) ÷ SD20 (ฝั่ง SELL; BUY ใช้ค่าลบ) — SMA / SD20 จากราคาปิด 19 แท่งก่อน + ราคาเปิด
+  รู้ค่าทันทีที่เปิดแท่ง และคงที่ทั้งแท่ง (เดิมใช้ Low / High ปลายไส้ เทียบ SMA ณ ราคาปัจจุบัน — ผิดจากนิยาม)
+- ใช้กับเงื่อนไขเข้าไม้ (`InpFloatFilter` / `InpFloatMin`), ป้าย `F+x.xx` บนกราฟ, Dashboard, tooltip และคอลัมน์ `z_float` ใน CSV
+- `z_open` ใน CSV ยังเป็นราคาเปิดเทียบ SMA ณ ตอนยิง (ค่าใกล้เคียง Z_float แต่ SMA ขยับตามราคาแล้ว)
 
 ### Counter EA v12.41
 - ป้าย Z_float บนกราฟ (สีม่วง `F+1.23`): แท่งที่ลอยพ้น SMA เกิน 1.0 SD (`InpShowFloatMark`, `InpFloatMarkZ`)
