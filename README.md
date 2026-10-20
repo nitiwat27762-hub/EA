@@ -47,7 +47,10 @@ indicator EA XAUUSD
 
 | ไฟล์ | เวอร์ชัน | รายละเอียด |
 |---|---|---|
-| `Experts/Seven_Lines_Counter_EA.mq5` | 12.43 | EA สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว (XAUUSD, บัญชี Hedging) |
+| `Experts/Seven_Lines_Counter_EA.mq5` | 12.44 | EA สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว (XAUUSD, บัญชี Hedging) |
+
+### Counter EA v12.44
+- ระบบทำงาน (เฝ้า / เปิดไม้) เฉพาะแท่งที่ลอย Z_float > 1.8 (`InpFloatMin` = 1.80, เดิม 0) — ค่าตอนเปิดแท่ง คงที่ทั้งแท่ง
 
 ### Counter EA v12.43
 - ป้าย Z_float ของแท่งปัจจุบันแสดงค่าเสมอตั้งแต่เปิดแท่ง (ฝั่งที่ราคาเปิดอยู่, ไม่ถึงเกณฑ์ 1.0 = สีเทา) — `InpFloatMarkLive`

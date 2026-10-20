@@ -16,7 +16,7 @@
 //  • T2: Z > 2.5 + ไม่มีค่าสุดขั้วใหม่ 5 วิ + ยังอยู่ในโซน (Lot 0.02)
 //  • T1: Z > 2.0 + ไม่มีค่าสุดขั้วใหม่ 15 วิ + ยังอยู่ในโซน (Lot 0.01)
 //    ลดระดับ = ใช้เวลารอของระดับใหม่ (นับจากค่าสุดขั้วล่าสุด), Z ทั้งคู่ต่ำกว่า T1 → ยกเลิกแล้วหาสัญญาณใหม่
-//  • ทุกระดับต้องเป็นแท่งลอยตัว: Z_float = (ราคาเปิดแท่ง − SMA ตอนเปิดแท่ง) ÷ SD20 > 0 (SELL) / (SMA − ราคาเปิด) ÷ SD20 > 0 (BUY)
+//  • ทุกระดับต้องเป็นแท่งลอยตัว: Z_float = (ราคาเปิดแท่ง − SMA ตอนเปิดแท่ง) ÷ SD20 > 1.8 (SELL) / (SMA − ราคาเปิด) ÷ SD20 > 1.8 (BUY)
 //    SMA / SD ตอนเปิดแท่ง = ราคาปิด 19 แท่งก่อนหน้า + ราคาเปิด (รู้ค่าทันทีที่เปิดแท่ง คงที่ทั้งแท่ง) ไม่ลอย = ไม่เฝ้า
 //  • บันทึก (ไม่กรอง): Z_open = (Open − SMA) ÷ SD20, Z_gap = (เส้นถดถอย − SMA) ÷ SD20 (+ = ทิศของการกระชาก)
 //  • ห้ามเฝ้า/เข้าไม้: นาทีแรก + 2 นาทีสุดท้ายของแท่ง, ข่าว USD High ±5 นาที (ไม้ที่ถืออยู่รันต่อ)
@@ -42,7 +42,7 @@
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "12.43"
+#property version     "12.44"
 #property description "สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว สำหรับ XAUUSD (บัญชี Hedging)"
 
 #include <Trade\Trade.mqh>
@@ -59,7 +59,7 @@ input double          InpT2_Z              = 2.50;       // T2: Z_reg หรื�
 input int             InpT2_Sec            = 5;          // T2: ยิงเมื่อไม่มีค่าสุดขั้วใหม่ครบกี่วินาที
 input double          InpT3_Z              = 3.00;       // T3: Z_reg หรือ Z_SMA ตัวใดตัวหนึ่ง > ค่านี้ → ยิงทันที
 input bool            InpFloatFilter       = true;       // ต้องเป็นแท่งลอยตัว: ราคาเปิดแท่งพ้นเส้น SMA ตอนเปิดแท่ง (SELL เหนือ / BUY ใต้)
-input double          InpFloatMin          = 0.00;       // แท่งลอยตัวเมื่อ Z_float > ค่านี้ (หน่วย SD20)
+input double          InpFloatMin          = 1.80;       // ระบบทำงานเมื่อแท่งลอย Z_float > ค่านี้ (หน่วย SD20, 0 = แค่ราคาเปิดพ้น SMA)
 input double          InpNoNewExtEps       = 0.01;       // Z ต้องเกินค่าสุดขั้วเดิมเท่านี้ถึงนับเป็นค่าใหม่
 input double          InpSigmaFloorMult    = 0.50;       // ตัวหาร Z ต้องไม่น้อยกว่า ค่านี้ × StdDev ของการเปลี่ยนแปลงราคาต่อแท่ง
 
@@ -2637,7 +2637,7 @@ string WatchText(const WatchState &w, bool is_sell, long now_msc) {
                           StageTag(w.tier), need, TierLot(w.tier), w.ext_r, w.ext_s, (double)(now_msc - w.last_new) / 1000.0, left);
    }
    if(g_z_valid && TierOf(dir, g_z_reg, g_z_sma) >= 1 && !FloatOK(dir, g_bar0_fz))
-      return StringFormat("⏸️ Z ถึงเกณฑ์แต่ราคาเปิดแท่งไม่ลอยพ้น SMA (Z_float %+.2f ต้อง > %.2f)", zf, InpFloatMin);
+      return StringFormat("⏸️ Z ถึงเกณฑ์แต่แท่งลอยไม่พอ (Z_float %+.2f ต้อง > %.2f)", zf, InpFloatMin);
    return StringFormat("✅ รอ Z ตัวใดก็ได้ T1 > %s%.2f / T2 > %s%.2f / T3 > %s%.2f + แท่งลอยพ้น SMA (Z_float ตอนนี้ %+.2f)",
                        sg, InpT1_Z, sg, InpT2_Z, sg, InpT3_Z, zf);
 }
@@ -2702,8 +2702,8 @@ void UpdateDashboard(int ts, datetime now) {
    string news_str = NextNewsText(now);
 
    long   now_msc = MathMax(g_last_tick_msc, (long)now * 1000);
-   string msg = StringFormat("=== 📊 7-Lines Counter EA v12.43 (Z ตัวใดก็ได้ + แท่งลอยพ้น SMA | T1 Z>%.1f %d วิ / T2 Z>%.1f %d วิ / T3 Z>%.1f ทันที | SL ไส้ ± %.0f / T3 ± %.0f | คืนกำไร %.0f%%) ===\n",
-                             InpT1_Z, InpT1_Sec, InpT2_Z, InpT2_Sec, InpT3_Z, InpSLBeyond_Pts, InpSLBeyondT3_Pts, InpGiveback_Pct);
+   string msg = StringFormat("=== 📊 7-Lines Counter EA v12.44 (Z ตัวใดก็ได้ + แท่งลอย Z_float > %.2f | T1 Z>%.1f %d วิ / T2 Z>%.1f %d วิ / T3 Z>%.1f ทันที | SL ไส้ ± %.0f / T3 ± %.0f | คืนกำไร %.0f%%) ===\n",
+                             InpFloatMin, InpT1_Z, InpT1_Sec, InpT2_Z, InpT2_Sec, InpT3_Z, InpSLBeyond_Pts, InpSLBeyondT3_Pts, InpGiveback_Pct);
    msg += StringFormat("Z (%s, %d) : %s\n", EnumToString(InpZ_Timeframe), InpZ_Period, z_str);
    msg += StringFormat("Z แท่งที่เพิ่งปิด : R %+.2f / S %+.2f%s\n", g_prev_close_zr, g_prev_close_zs, (news_str == "" ? "" : " | " + news_str));
    if(g_z_valid)   // ÷ SD20, + = เหนือ SMA (ฝั่ง SELL ใช้ค่านี้ / ฝั่ง BUY ใช้ค่าลบ)
