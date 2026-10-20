@@ -6,7 +6,10 @@ indicator EA XAUUSD
 | ไฟล์ | เวอร์ชัน | รายละเอียด |
 |---|---|---|
 | `Indicators/Seven_Lines_Exhaustion_Ind.mq5` | 8.82 | 7-Lines Exhaustion + Z-Score (MQL5) |
-| `Indicators/Seven_Lines_Context_Ind.mq5` | 2.00 | Z หลายนิยาม (ถดถอย / SMA / ถดถอยโค้ง / Median / Speed / EMA) + ป้ายค่า Z + สถิติการดีดกลับ |
+| `Indicators/Seven_Lines_Context_Ind.mq5` | 2.10 | Z หลายนิยาม (ถดถอย / SMA / ถดถอยโค้ง / Median / Speed / EMA) + ป้ายค่า Z + สถิติการดีดกลับ |
+
+### Context Indicator v2.10
+- วาดเส้นถดถอย (R) และ SMA20 (S) + แถบ ± 2σ ในตัว Indicator เอง — ใช้ได้โดยไม่ต้องมี Counter EA บนกราฟ
 
 ### Context Indicator v2.00 — Z หลายนิยาม
 - ลบเส้นชุดเก่าทั้งหมด (TF ใหญ่ / VWAP / Keltner / วันก่อน / เลขกลม / EMA200) เพราะไม่ได้วัดแบบเดียวกับ Z

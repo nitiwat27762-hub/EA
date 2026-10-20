@@ -7,8 +7,8 @@
 //  Z = (ราคา − เส้นกลาง) ÷ ค่าเบี่ยงเบนปกติรอบเส้นนั้น
 //  หน้าต่าง 20 แท่ง = แท่งปิด 19 แท่งก่อนหน้า + ราคาที่วัด (เหมือน Counter EA: High = ฝั่ง SELL / Low = ฝั่ง BUY)
 //  |Z| สุดขั้ว = ราคาห่างเส้นผิดปกติ → ควรถูกดีดกลับหาเส้น
-//   R  เส้นถดถอยเชิงเส้น         ÷ max(SD ส่วนเหลือ, พื้น)        (เหมือน EA)
-//   S  SMA20                     ÷ SD20                          (เหมือน EA)
+//   R  เส้นถดถอยเชิงเส้น         ÷ max(SD ส่วนเหลือ, พื้น)        (เหมือน EA, วาดเส้น + แถบ ± 2σ)
+//   S  SMA20                     ÷ SD20                          (เหมือน EA, วาดเส้น + แถบ ± 2σ)
 //   Q  เส้นถดถอยโค้ง (กำลังสอง)  ÷ max(SD ส่วนเหลือ, พื้น)
 //   M  Median 20                 ÷ max(1.4826 × MAD, พื้น)
 //   V  Speed: ราคาปิด 4 แท่งก่อน ÷ (SD ของการเปลี่ยนแปลงต่อแท่งของแท่งปิด × √4)
@@ -21,11 +21,11 @@
 //    → % ที่ราคากลับไปแตะเส้นภายใน 8 แท่ง + ระยะไปต่อสูงสุดเฉลี่ยใน 8 แท่ง (ใช้เทียบว่านิยามไหนดีดกลับจริง)
 //
 #property copyright   "Commander's Quant System"
-#property version     "2.00"
+#property version     "2.10"
 #property description "Z หลายนิยาม (ถดถอย / SMA / ถดถอยโค้ง / Median / Speed / EMA) + ป้ายค่า Z + สถิติการดีดกลับ"
 #property indicator_chart_window
-#property indicator_buffers 11
-#property indicator_plots   9
+#property indicator_buffers 17
+#property indicator_plots   15
 
 #property indicator_label1  "Q ถดถอยโค้ง"
 #property indicator_type1   DRAW_LINE
@@ -54,6 +54,24 @@
 #property indicator_label9  "E −σ"
 #property indicator_type9   DRAW_LINE
 #property indicator_style9  STYLE_DOT
+#property indicator_label10 "R ถดถอย"
+#property indicator_type10  DRAW_LINE
+#property indicator_style10 STYLE_DOT
+#property indicator_label11 "R +σ"
+#property indicator_type11  DRAW_LINE
+#property indicator_style11 STYLE_DASH
+#property indicator_label12 "R −σ"
+#property indicator_type12  DRAW_LINE
+#property indicator_style12 STYLE_DASH
+#property indicator_label13 "S SMA20"
+#property indicator_type13  DRAW_LINE
+#property indicator_style13 STYLE_DOT
+#property indicator_label14 "S +σ"
+#property indicator_type14  DRAW_LINE
+#property indicator_style14 STYLE_DASHDOT
+#property indicator_label15 "S −σ"
+#property indicator_type15  DRAW_LINE
+#property indicator_style15 STYLE_DASHDOT
 
 //====================================================================
 // 🎛️ INPUT PARAMETERS
@@ -64,6 +82,10 @@ input double InpSigmaFloorMult    = 0.50;    // พื้นตัวหาร =
 input int    InpSpeedBars         = 4;       // V: เทียบกับราคาปิดกี่แท่งก่อน
 
 input group "=== เส้นบนกราฟ ==="
+input bool   InpShowReg           = true;    // R: วาดเส้นถดถอย
+input bool   InpShowRegBand       = true;    // R: วาดแถบ ± σ
+input bool   InpShowSMA           = true;    // S: วาดเส้น SMA20
+input bool   InpShowSMABand       = true;    // S: วาดแถบ ± σ
 input bool   InpShowQuad          = true;    // Q: วาดเส้นถดถอยโค้ง
 input bool   InpShowQuadBand      = false;   // Q: วาดแถบ ± σ
 input bool   InpShowMedian        = true;    // M: วาดเส้น Median
@@ -85,6 +107,8 @@ input double InpStatZ             = 2.00;    // นับแท่งที่ |
 input int    InpStatBars          = 8;       // ราคาต้องกลับแตะเส้นภายในกี่แท่ง
 
 input group "=== สี ==="
+input color  InpClrReg            = clrGold;           // R
+input color  InpClrSMA            = clrDarkKhaki;      // S
 input color  InpClrQuad           = clrMediumOrchid;   // Q
 input color  InpClrMedian         = clrTurquoise;      // M
 input color  InpClrEMA            = clrGoldenrod;      // E
@@ -107,6 +131,7 @@ struct ZSet {
 };
 
 double bQ[], bQp[], bQm[], bM[], bMp[], bMm[], bE[], bEp[], bEm[];
+double bR[], bRp[], bRm[], bS[], bSp[], bSm[];
 double cEma[], cEVar[];
 
 double g_pmult = 1.0;
@@ -456,8 +481,14 @@ int OnInit() {
    SetIndexBuffer(6,  bE,    INDICATOR_DATA);
    SetIndexBuffer(7,  bEp,   INDICATOR_DATA);
    SetIndexBuffer(8,  bEm,   INDICATOR_DATA);
-   SetIndexBuffer(9,  cEma,  INDICATOR_CALCULATIONS);
-   SetIndexBuffer(10, cEVar, INDICATOR_CALCULATIONS);
+   SetIndexBuffer(9,  bR,    INDICATOR_DATA);
+   SetIndexBuffer(10, bRp,   INDICATOR_DATA);
+   SetIndexBuffer(11, bRm,   INDICATOR_DATA);
+   SetIndexBuffer(12, bS,    INDICATOR_DATA);
+   SetIndexBuffer(13, bSp,   INDICATOR_DATA);
+   SetIndexBuffer(14, bSm,   INDICATOR_DATA);
+   SetIndexBuffer(15, cEma,  INDICATOR_CALCULATIONS);
+   SetIndexBuffer(16, cEVar, INDICATOR_CALCULATIONS);
    SetPlot(0, InpShowQuad,       InpClrQuad);
    SetPlot(1, InpShowQuadBand,   InpClrQuad);
    SetPlot(2, InpShowQuadBand,   InpClrQuad);
@@ -467,6 +498,12 @@ int OnInit() {
    SetPlot(6, InpShowEMA,        InpClrEMA);
    SetPlot(7, InpShowEMABand,    InpClrEMA);
    SetPlot(8, InpShowEMABand,    InpClrEMA);
+   SetPlot(9,  InpShowReg,       InpClrReg);
+   SetPlot(10, InpShowRegBand,   InpClrReg);
+   SetPlot(11, InpShowRegBand,   InpClrReg);
+   SetPlot(12, InpShowSMA,       InpClrSMA);
+   SetPlot(13, InpShowSMABand,   InpClrSMA);
+   SetPlot(14, InpShowSMABand,   InpClrSMA);
 
    IndicatorSetString(INDICATOR_SHORTNAME, "7L Z หลายนิยาม");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
@@ -503,12 +540,16 @@ int OnCalculate(const int rates_total, const int prev_calculated,
          cEma[i]  = cEma[i - 1] + al * d;
          cEVar[i] = (1.0 - al) * (cEVar[i - 1] + al * d * d);
       }
-      // เส้นกลาง ± แถบ ณ ราคาปิด (Q / M / E)
+      // เส้นกลาง ± แถบ ณ ราคาปิด (R / S / Q / M / E)
+      bR[i] = EMPTY_VALUE; bRp[i] = EMPTY_VALUE; bRm[i] = EMPTY_VALUE;
+      bS[i] = EMPTY_VALUE; bSp[i] = EMPTY_VALUE; bSm[i] = EMPTY_VALUE;
       bQ[i] = EMPTY_VALUE; bQp[i] = EMPTY_VALUE; bQm[i] = EMPTY_VALUE;
       bM[i] = EMPTY_VALUE; bMp[i] = EMPTY_VALUE; bMm[i] = EMPTY_VALUE;
       bE[i] = EMPTY_VALUE; bEp[i] = EMPTY_VALUE; bEm[i] = EMPTY_VALUE;
       ZSet s;
       if(i < g_warm || !ZAll(close, i, close[i], s)) continue;
+      bR[i] = s.ctr[0]; bRp[i] = s.ctr[0] + InpBandZ * s.sig[0]; bRm[i] = s.ctr[0] - InpBandZ * s.sig[0];
+      bS[i] = s.ctr[1]; bSp[i] = s.ctr[1] + InpBandZ * s.sig[1]; bSm[i] = s.ctr[1] - InpBandZ * s.sig[1];
       bQ[i] = s.ctr[2]; bQp[i] = s.ctr[2] + InpBandZ * s.sig[2]; bQm[i] = s.ctr[2] - InpBandZ * s.sig[2];
       bM[i] = s.ctr[3]; bMp[i] = s.ctr[3] + InpBandZ * s.sig[3]; bMm[i] = s.ctr[3] - InpBandZ * s.sig[3];
       bE[i] = s.ctr[5]; bEp[i] = s.ctr[5] + InpBandZ * s.sig[5]; bEm[i] = s.ctr[5] - InpBandZ * s.sig[5];
