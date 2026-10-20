@@ -42,7 +42,7 @@
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "12.40"
+#property version     "12.41"
 #property description "สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว สำหรับ XAUUSD (บัญชี Hedging)"
 
 #include <Trade\Trade.mqh>
@@ -111,6 +111,8 @@ input bool            InpShowLiveZ         = true;       // แสดงป้�
 input int             InpLiveZFontSize     = 11;         // ขนาดตัวอักษรป้าย Z สด
 input int             InpLiveZOffsetPx     = 10;         // ระยะห่างป้าย Z สดจากขอบขวาของกราฟ (พิกเซล)
 input bool            InpShowBarZ          = true;       // แสดงป้ายค่า Z บนแท่งที่ Z ถึงเกณฑ์
+input bool            InpShowFloatMark     = true;       // แสดงป้าย Z_float บนแท่งที่ลอยพ้น SMA (ช่วงแท่งเดียวกับป้าย Z)
+input double          InpFloatMarkZ        = 1.00;       // ป้าย Z_float: แสดงเมื่อ Z_float > ค่านี้
 input int             InpBarZBars          = 2000;       // จำนวนแท่งย้อนหลัง (TF ของ Z) ที่แสดงป้าย (สูงสุด 20,000)
 input int             InpBarZFontSize      = 8;          // ขนาดตัวอักษรป้าย Z บนแท่ง
 input double          InpBarZOffset_Pts    = 300.0;      // ระยะห่างป้ายจากไส้เทียน (จุด)
@@ -143,6 +145,7 @@ input color           InpClrLiveNormal     = clrSilver;         // ป้าย 
 input color           InpClrBarZSell       = clrOrangeRed;      // ป้าย Z บนแท่ง: ฝั่ง SELL (เหนือแท่ง)
 input color           InpClrBarZBuy        = clrDeepSkyBlue;    // ป้าย Z บนแท่ง: ฝั่ง BUY (ใต้แท่ง)
 input color           InpClrBarZOther      = clrGray;           // ป้าย Z บนแท่ง: ถึงเกณฑ์ไม่ครบตามเงื่อนไขเข้าไม้
+input color           InpClrFloatMark      = clrMediumPurple;   // ป้าย Z_float (แท่งลอยพ้น SMA)
 input color           InpClrEntrySell      = clrRed;            // มาร์กจุดเปิด SELL
 input color           InpClrEntryBuy       = clrLime;           // มาร์กจุดเปิด BUY
 input color           InpClrEntryGap       = clrYellow;         // เส้นประ + ตัวเลขระยะห่างถึงปลายไส้
@@ -1454,6 +1457,50 @@ void SetBarZLabels(datetime t, double hi, double lo, const double &zr[], const d
    }
 }
 
+// ป้าย Z_float ของแท่งเวลา t: แท่งลอยพ้น SMA เกิน InpFloatMarkZ → SELL ป้ายใต้ Low (ระหว่างแท่งกับ SMA) / BUY ป้ายเหนือ High
+void SetBarFloatLabel(datetime t, double hi, double lo, double sma, double sd) {
+   double off = PtsToPrice(InpBarZOffset_Pts);
+   string ts  = IntegerToString((long)t);
+   for(int side = 0; side < 2; side++) {
+      int    dir  = (side == 0) ? -1 : 1;
+      string name = OBJ_PREFIX + (side == 0 ? "FL_S_" : "FL_B_") + ts;
+      double zf   = ZFloat(dir, hi, lo, sma, sd);
+      if(!InpShowFloatMark || sd <= 0.0 || zf <= InpFloatMarkZ) { if(ObjectFind(0, name) >= 0) ObjectDelete(0, name); continue; }
+      double price = (side == 0) ? (lo - off) : (hi + off);
+      if(ObjectFind(0, name) < 0) {
+         ObjectCreate(0, name, OBJ_TEXT, 0, t, price);
+         ObjectSetString(0,  name, OBJPROP_FONT, "Arial Bold");
+         ObjectSetInteger(0, name, OBJPROP_FONTSIZE, InpBarZFontSize);
+         ObjectSetInteger(0, name, OBJPROP_ANCHOR, (side == 0) ? ANCHOR_UPPER : ANCHOR_LOWER);
+         ObjectSetInteger(0, name, OBJPROP_COLOR, InpClrFloatMark);
+         ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+         RememberBarZLabel(name, t);
+      }
+      ObjectSetInteger(0, name, OBJPROP_TIME, t);
+      ObjectSetDouble(0,  name, OBJPROP_PRICE, ND(price));
+      ObjectSetString(0,  name, OBJPROP_TEXT, StringFormat("F%+.2f", zf));
+      ObjectSetString(0,  name, OBJPROP_TOOLTIP,
+                      StringFormat("%s | แท่งลอยพ้น SMA (%s): Z_float %+.2f = (%s − SMA %s) ÷ SD20 %.0f จุด",
+                                   TimeToString(t, TIME_DATE|TIME_MINUTES), (side == 0 ? "ฝั่ง SELL" : "ฝั่ง BUY"), zf,
+                                   (side == 0 ? "Low " + DoubleToString(lo, _Digits) : "High " + DoubleToString(hi, _Digits)),
+                                   DoubleToString(sma, _Digits), PriceToPts(sd)));
+   }
+}
+
+// SMA / SD ของราคาปิด n แท่งที่จบที่ c[j] (แท่งที่ปิดแล้ว: SMA ณ ราคาปิดของแท่งนั้น)
+bool SmaSdAt(const double &c[], int j, double &sma, double &sd) {
+   int n = InpZ_Period;
+   if(j < n - 1) return false;
+   double s = 0.0, ss = 0.0, ref = c[j];
+   for(int k = j - n + 1; k <= j; k++) { double d = c[k] - ref; s += d; ss += d * d; }
+   double m = s / n, v = ss / n - m * m;
+   if(v <= 0.0) return false;
+   sma = ref + m;
+   sd  = MathSqrt(v);
+   return true;
+}
+
 // ประเมินแท่งที่ปิดแล้วชุดหนึ่ง (shift เริ่มที่ from_shift จำนวน bars แท่ง)
 void EvaluateClosedBars(int from_shift, int bars) {
    int n   = InpZ_Period;
@@ -1468,9 +1515,13 @@ void EvaluateClosedBars(int from_shift, int bars) {
    double zr[2], zs[2];
    bool   ok[2];
    for(int j = n - 1; j < cnt; j++) {
-      ok[0] = ZForBarPrice(c, j, h[j], zr[0], zs[0]);
-      ok[1] = ZForBarPrice(c, j, l[j], zr[1], zs[1]);
-      SetBarZLabels(t[j], h[j], l[j], zr, zs, ok);
+      if(InpShowBarZ) {
+         ok[0] = ZForBarPrice(c, j, h[j], zr[0], zs[0]);
+         ok[1] = ZForBarPrice(c, j, l[j], zr[1], zs[1]);
+         SetBarZLabels(t[j], h[j], l[j], zr, zs, ok);
+      }
+      double sma = 0.0, sd = 0.0;
+      if(SmaSdAt(c, j, sma, sd)) SetBarFloatLabel(t[j], h[j], l[j], sma, sd);
    }
 }
 
@@ -1493,7 +1544,7 @@ void PruneBarZLabels() {
 
 // เรียกทุก 1 วินาที: ขึ้นแท่งใหม่ → ยืนยันแท่งที่ปิด (หรือคำนวณย้อนหลังทั้งชุดครั้งแรก) + อัปเดตแท่งปัจจุบัน
 void UpdateBarZLabels() {
-   if(!g_draw || !InpShowBarZ || !g_z_ready) return;
+   if(!g_draw || (!InpShowBarZ && !InpShowFloatMark) || !g_z_ready) return;
    datetime t0 = CurrentZBarTime();
    if(t0 == 0) return;
 
@@ -1518,7 +1569,8 @@ void UpdateBarZLabels() {
       zr[s] = 0.0; zs[s] = 0.0;
       ok[s] = (px[s] > 0.0) && ZAtPrice(g_zc, px[s], zr[s], zs[s], fit, sig, fl, mn, ssd);
    }
-   SetBarZLabels(t0, g_bar0_hi, g_bar0_lo, zr, zs, ok);
+   if(InpShowBarZ) SetBarZLabels(t0, g_bar0_hi, g_bar0_lo, zr, zs, ok);
+   if(g_z_valid)   SetBarFloatLabel(t0, g_bar0_hi, g_bar0_lo, g_sma_mean, g_sma_sd);   // แท่งปัจจุบัน: SMA / SD ณ ราคาล่าสุด
 }
 
 //====================================================================
@@ -2628,7 +2680,7 @@ void UpdateDashboard(int ts, datetime now) {
    string news_str = NextNewsText(now);
 
    long   now_msc = MathMax(g_last_tick_msc, (long)now * 1000);
-   string msg = StringFormat("=== 📊 7-Lines Counter EA v12.40 (Z ตัวใดก็ได้ + แท่งลอยพ้น SMA | T1 Z>%.1f %d วิ / T2 Z>%.1f %d วิ / T3 Z>%.1f ทันที | SL ไส้ ± %.0f / T3 ± %.0f | คืนกำไร %.0f%%) ===\n",
+   string msg = StringFormat("=== 📊 7-Lines Counter EA v12.41 (Z ตัวใดก็ได้ + แท่งลอยพ้น SMA | T1 Z>%.1f %d วิ / T2 Z>%.1f %d วิ / T3 Z>%.1f ทันที | SL ไส้ ± %.0f / T3 ± %.0f | คืนกำไร %.0f%%) ===\n",
                              InpT1_Z, InpT1_Sec, InpT2_Z, InpT2_Sec, InpT3_Z, InpSLBeyond_Pts, InpSLBeyondT3_Pts, InpGiveback_Pct);
    msg += StringFormat("Z (%s, %d) : %s\n", EnumToString(InpZ_Timeframe), InpZ_Period, z_str);
    msg += StringFormat("Z แท่งที่เพิ่งปิด : R %+.2f / S %+.2f%s\n", g_prev_close_zr, g_prev_close_zs, (news_str == "" ? "" : " | " + news_str));
