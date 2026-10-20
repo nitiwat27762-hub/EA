@@ -11,20 +11,21 @@
 //  • Z_reg = (ราคา − เส้นถดถอยเชิงเส้น) / max(StdDev รอบเส้นถดถอย, 0.5 × StdDev ของส่วนต่างราคาต่อแท่ง)
 //  • Z_SMA = (ราคา − SMA20) / StdDev20
 //
-// 📋 ตรรกะการเข้าไม้ (v12.45) — ตรวจ T3 → T2 → T1, เกณฑ์เดียวกันทั้ง SELL (+Z) / BUY (−Z)
-//  • T3: Z_reg หรือ Z_SMA ตัวใดตัวหนึ่ง > 3.0 → ยิงทันที (Lot 0.03)
-//  • T2: Z ทั้งคู่ > 2.5 (แท่งลอย Z_float > 2.0 → ตัวใดตัวหนึ่ง > 2.5 ก็ได้) + ไม่มีค่าสุดขั้วใหม่ 5 วิ (Lot 0.02)
-//  • T1: Z ทั้งคู่ > 2.0 + ไม่มีค่าสุดขั้วใหม่ 15 วิ (Lot 0.01)
-//    ลดระดับ = ใช้เวลารอของระดับใหม่ (นับจากค่าสุดขั้วล่าสุด), ไม่เข้าเงื่อนไขระดับใดเลย → ยกเลิกแล้วหาสัญญาณใหม่
-//  • ทุกระดับต้องเป็นแท่งลอยตัว: Z_float = (ราคาเปิดแท่ง − SMA ตอนเปิดแท่ง) ÷ SD20 > 1.8 (SELL) / (SMA − ราคาเปิด) ÷ SD20 > 1.8 (BUY)
-//    SMA / SD ตอนเปิดแท่ง = ราคาปิด 19 แท่งก่อนหน้า + ราคาเปิด (รู้ค่าทันทีที่เปิดแท่ง คงที่ทั้งแท่ง) ไม่ลอย = ไม่เฝ้า
+// 📋 ตรรกะการเข้าไม้ (v12.50) — ตรวจ T4 → T3 → T2 → T1, เกณฑ์เดียวกันทั้ง SELL (+Z) / BUY (−Z)
+//  • T4: Z_reg หรือ Z_SMA ตัวใดตัวหนึ่ง > 3.5 → ยิงทันที (Lot 0.04)
+//  • T3: Z ตัวใดตัวหนึ่ง > 3.0 + ไม่มีค่าสุดขั้วใหม่ 2 วิ (Lot 0.03)
+//  • T2: Z ทั้งคู่ > 2.5 (แท่งลอย Z_float > 2.0 → ตัวใดตัวหนึ่งก็ได้) + 5 วิ (Lot 0.02)
+//  • T1: Z ทั้งคู่ > 2.0 + 15 วิ (Lot 0.01)
+//  • T1 / T2 ต้องเป็นแท่งลอย Z_float > 1.8 (ราคาเปิดแท่ง − SMA ตอนเปิดแท่ง) ÷ SD20 — T3 / T4 ไม่ต้องลอย
+//  • ระหว่างจับเวลา Z หลุดเกณฑ์ได้ (ไม่ยกเลิก, ใช้ระดับลึกสุดที่ไปถึง) — ยกเลิกเมื่อขึ้นแท่งใหม่ / เข้าช่วงห้ามเท่านั้น
+//    มีไม้ถืออยู่ = ยังเฝ้าต่อแต่ยังไม่ยิง (ครั้งละ 1 ไม้), ไม้ปิด = ล้างการเฝ้าฝั่งเดียวกัน
+//  • กฎในแท่ง (แยกฝั่ง): ไม้ T1 / T2 ไม้แรกของแท่งชน SL → ปิด T1 / T2 ฝั่งนั้นทั้งแท่ง (T3 / T4 ลุยต่อ)
+//    T3 / T4 ชน SL → เปิดใหม่ได้ทันทีถ้า Z สุดขั้วมากกว่าไม้ที่ชน SL อย่างน้อย 0.1 (แท่งใหม่ล้างค่า)
+//  • ห้ามเฝ้า/เข้าไม้: นาทีแรก + 2 นาทีสุดท้ายของแท่ง, ข่าว USD High ±5 นาที | ตัวกรองตอนยิง: เวลาตลาด + สเปรด | ไม่มี Cool down
 //  • บันทึก (ไม่กรอง): Z_open = (Open − SMA) ÷ SD20, Z_gap = (เส้นถดถอย − SMA) ÷ SD20 (+ = ทิศของการกระชาก)
-//  • ห้ามเฝ้า/เข้าไม้: นาทีแรก + 2 นาทีสุดท้ายของแท่ง, ข่าว USD High ±5 นาที (ไม้ที่ถืออยู่รันต่อ)
-//  • ตัวกรองตอนยิง: เวลาตลาด + สเปรด
-//  • Cool down: ชน SL ของ T3 1 ครั้ง / T2 2 ครั้งติด → พัก 30 นาที (คืนค่าจากประวัติเมื่อรีสตาร์ท)
 //
 // 📋 ตรรกะการจัดการไม้
-//  • SL = High (SELL) / Low (BUY) ของแท่ง ณ ตอนเปิดไม้ ± 1,000 จุด (T3 ± 3,000), TP 30,000 จุด
+//  • SL = ยอดตั้งแต่เริ่มเฝ้า (SELL = Ask สูงสุด / BUY = Bid ต่ำสุด) ± 500 จุด, TP 30,000 จุด
 //  • กำไรถึง 10,000 → เปิดโล่ไล่จี้ (ห่าง 8,000 ขยับทุก 5 วิ) แล้วปล่อยให้โล่ทำงาน
 //  • ยังไม่ถึงโล่: กำไรคืนเกิน 75% จากกำไรสูงสุด (สูงสุด ≥ 2,000) → ตัดจบ / ครบ 1,500 วิ → ตัดจบ
 //  • ห้ามเข้า 1 ชม.แรกหลังตลาดเปิดสัปดาห์ / ปิดทุกไม้ 30 นาทีก่อนตลาดปิดสัปดาห์
@@ -42,7 +43,7 @@
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "12.45"
+#property version     "12.50"
 #property description "สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว สำหรับ XAUUSD (บัญชี Hedging)"
 
 #include <Trade\Trade.mqh>
@@ -58,21 +59,22 @@ input int             InpT1_Sec            = 15;         // T1: ยิงเม�
 input double          InpT2_Z              = 2.50;       // T2: Z_reg และ Z_SMA ทั้งคู่ > ค่านี้
 input double          InpT2EitherFloat     = 2.00;       // T2: แท่งลอย Z_float > ค่านี้ → Z ตัวใดตัวหนึ่ง > T2 ก็ได้ (ตั้งสูง เช่น 99 = ต้องทั้งคู่เสมอ)
 input int             InpT2_Sec            = 5;          // T2: ยิงเมื่อไม่มีค่าสุดขั้วใหม่ครบกี่วินาที
-input double          InpT3_Z              = 3.00;       // T3: Z_reg หรือ Z_SMA ตัวใดตัวหนึ่ง > ค่านี้ → ยิงทันที
-input bool            InpFloatFilter       = true;       // ต้องเป็นแท่งลอยตัว: ราคาเปิดแท่งพ้นเส้น SMA ตอนเปิดแท่ง (SELL เหนือ / BUY ใต้)
-input double          InpFloatMin          = 1.80;       // ระบบทำงานเมื่อแท่งลอย Z_float > ค่านี้ (หน่วย SD20, 0 = แค่ราคาเปิดพ้น SMA)
+input double          InpT3_Z              = 3.00;       // T3: Z_reg หรือ Z_SMA ตัวใดตัวหนึ่ง > ค่านี้ (ไม่ต้องลอย)
+input int             InpT3_Sec            = 2;          // T3: ยิงเมื่อไม่มีค่าสุดขั้วใหม่ครบกี่วินาที
+input double          InpT4_Z              = 3.50;       // T4: Z_reg หรือ Z_SMA ตัวใดตัวหนึ่ง > ค่านี้ → ยิงทันที (ไม่ต้องลอย)
+input bool            InpFloatFilter       = true;       // T1 / T2 ต้องเป็นแท่งลอยตัว: ราคาเปิดแท่งพ้นเส้น SMA ตอนเปิดแท่ง (SELL เหนือ / BUY ใต้)
+input double          InpFloatMin          = 1.80;       // T1 / T2 ทำงานเมื่อแท่งลอย Z_float > ค่านี้ (หน่วย SD20, 0 = แค่ราคาเปิดพ้น SMA)
 input double          InpNoNewExtEps       = 0.01;       // Z ต้องเกินค่าสุดขั้วเดิมเท่านี้ถึงนับเป็นค่าใหม่
 input double          InpSigmaFloorMult    = 0.50;       // ตัวหาร Z ต้องไม่น้อยกว่า ค่านี้ × StdDev ของการเปลี่ยนแปลงราคาต่อแท่ง
 
 input group "=== 2. ออเดอร์ ==="
 input double          InpLot               = 0.01;       // Lot ของ T1
-input double          InpTierLotStep       = 0.01;       // Lot เพิ่มต่อระดับ (T2 = Lot+step, T3 = Lot+2·step)
+input double          InpTierLotStep       = 0.01;       // Lot เพิ่มต่อระดับ (T2 = Lot+step, T3 = +2·step, T4 = +3·step)
 input double          InpTP_Pts            = 30000.0;    // Take Profit (จุด)
-input double          InpSLBeyond_Pts      = 1000.0;     // T1 / T2: SL = High (SELL) / Low (BUY) ของแท่ง (TF ของ Z) ณ ตอนเปิดไม้ ± ระยะนี้ (จุด)
-input double          InpSLBeyondT3_Pts    = 3000.0;     // T3: SL = High / Low ของแท่ง ± ระยะนี้ (จุด)
+input double          InpSLPeak_Pts        = 500.0;      // SL = ยอดตั้งแต่เริ่มเฝ้า (SELL = Ask สูงสุด / BUY = Bid ต่ำสุด) ± ระยะนี้ (จุด)
 input double          InpSlippage_Pts      = 300.0;      // Slippage สูงสุดตอนส่งคำสั่ง (จุด)
 input long            InpMagic             = 880100;     // Magic Number
-input string          InpOrderComment      = "7L-CNT";   // คอมเมนต์ออเดอร์ (ต่อท้ายด้วยระดับ T1-T3 ใช้คืนค่า Cool down)
+input string          InpOrderComment      = "7L-CNT";   // คอมเมนต์ออเดอร์ (ต่อท้ายด้วยระดับ / Z สุดขั้ว ใช้คืนค่ากฎในแท่งเมื่อรีสตาร์ท)
 
 input group "=== 3. ไล่จี้กำไร ==="
 input double          InpTrailStart_Pts    = 10000.0;    // เริ่มไล่จี้เมื่อกำไรถึง (จุด)
@@ -86,10 +88,9 @@ input double          InpGivebackMinPeak_Pts = 2000.0;   // ใช้กฎค�
 input int             InpBarStartDelay_Sec = 60;         // ห้ามเฝ้า / เปิดไม้ ช่วงกี่วินาทีแรกของแท่ง (TF ของ Z)
 input int             InpBarEndBlock_Sec   = 120;        // ห้ามเฝ้า / เปิดไม้ ช่วงกี่วินาทีสุดท้ายก่อนปิดแท่ง (0 = ปิด)
 
-input group "=== 5. Cool down ==="
-input int             InpCoolT2_SL         = 2;          // ชน SL ของ T2 ติดต่อกันกี่ครั้ง → เริ่มพัก (0 = ไม่นับ)
-input int             InpCoolT3_SL         = 1;          // ชน SL ของ T3 ติดต่อกันกี่ครั้ง → เริ่มพัก (0 = ไม่นับ)
-input int             InpCooldown_Min      = 30;         // พักกี่นาที
+input group "=== 5. กฎในแท่ง (แยกฝั่ง, แท่งใหม่ล้างค่า) ==="
+input bool            InpT12BlockOnSL      = true;       // ไม้ T1 / T2 ไม้แรกของแท่งชน SL → ปิด T1 / T2 ฝั่งนั้นทั้งแท่ง
+input double          InpReEntryZStep      = 0.10;       // T3 / T4 ชน SL → ไม้ใหม่ต้อง Z สุดขั้วมากกว่าไม้ที่ชน SL อย่างน้อยเท่านี้
 
 input group "=== 6. ตัวกรองทั่วไป ==="
 input double          InpMaxSpread_Pts     = 800.0;      // สเปรดสูงสุดที่ยอมให้เข้าไม้ (จุด)
@@ -156,7 +157,6 @@ input color           InpClrSimBuy         = clrPaleGreen;      // มาร์�
 input color           InpClrSimWin         = clrLimeGreen;      // มาร์กจำลอง: เส้นเข้า→ออก ไม้กำไร
 input color           InpClrSimLoss        = clrTomato;         // มาร์กจำลอง: เส้นเข้า→ออก ไม้ขาดทุน
 input color           InpClrSimBlocked     = clrDimGray;        // มาร์กจำลอง: สัญญาณที่ถูกตัวกรองทิ้ง
-input color           InpClrSimCool        = clrDeepPink;       // มาร์กจำลอง: จุดเริ่ม Cool down
 input color           InpClrNewsLine       = clrMediumPurple;   // เส้นเวลาข่าว
 input color           InpClrNewsZone       = C'45,35,70';       // แถบแท่งข่าว
 
@@ -188,20 +188,23 @@ struct WeekBlock {
 // สถานะเฝ้าค่าสุดขั้ว (No new high/low) ของแต่ละฝั่ง — ใช้ร่วมกันทั้ง EA จริงและ Tick Replay
 struct WatchState {
    bool   active;
-   int    tier;       // ระดับวิกฤตตาม Z ปัจจุบัน (1-3) → กำหนดเวลารอ / Lot / SL
-   int    max_tier;   // ระดับลึกสุดระหว่างเฝ้า
+   int    tier;       // ระดับลึกสุดที่ไปถึงระหว่างเฝ้า (1-4) → เวลารอ / Lot (Z หลุดเกณฑ์ได้ ไม่ลดระดับ)
+   int    max_tier;   // = tier (เก็บไว้แสดงผล)
    double ext_r;      // ค่าสุดขั้วของ Z_reg ระหว่างเฝ้า
    double ext_s;      // ค่าสุดขั้วของ Z_SMA ระหว่างเฝ้า
    long   last_new;   // เวลา (msc) ที่ทำค่าสุดขั้วใหม่ล่าสุด
    long   started;    // เวลา (msc) ที่เริ่มเฝ้า (Z แตะ T1)
    double start_px;   // ราคาตอนเริ่มเฝ้า
+   double peak;       // ยอดตั้งแต่เริ่มเฝ้า (SELL = Ask สูงสุด / BUY = Bid ต่ำสุด) → SL = ยอด ± InpSLPeak_Pts
 };
 
-// Cool down หลังชน SL ของ T2 / T3 — ใช้ร่วมกันทั้ง EA จริงและ Tick Replay
-struct CoolState {
-   int      t2;       // ชน SL ของ T2 ติดต่อกัน
-   int      t3;       // ชน SL ของ T3 ติดต่อกัน
-   datetime until;    // พักถึงเวลานี้
+// กฎในแท่งของแต่ละฝั่ง — ใช้ร่วมกันทั้ง EA จริงและ Tick Replay (แท่งใหม่ล้างค่า)
+struct SideGate {
+   datetime bar;          // แท่ง (TF ของ Z) ที่ค่านี้ใช้อยู่
+   int      t12_n;        // จำนวนไม้ T1 / T2 ที่เปิดในแท่งนี้
+   long     first12;      // โพซิชันของไม้ T1 / T2 ไม้แรกของแท่ง (-1 = ยังไม่มี)
+   bool     t12_block;    // ไม้ T1 / T2 ไม้แรกชน SL → ปิด T1 / T2 ทั้งแท่ง
+   double   re_z;         // T3 / T4 ชน SL → ไม้ T3 / T4 ใหม่ต้อง Z สุดขั้ว > ค่านี้ + InpReEntryZStep (0 = ไม่มี)
 };
 
 // แคชผลรวมของแท่งที่ปิดแล้ว (ใช้ร่วมกันทั้ง EA จริงและ Tick Replay)
@@ -245,10 +248,12 @@ string    g_news_names[];
 datetime  g_news_loaded  = 0;
 bool      g_news_ok      = false;   // โหลดปฏิทินข่าวสำเร็จแล้วอย่างน้อย 1 ครั้ง
 
-// --- เฝ้าค่าสุดขั้ว / Cool down (EA จริง) ---
+// --- เฝ้าค่าสุดขั้ว / กฎในแท่ง (EA จริง) ---
 WatchState g_wsell;
 WatchState g_wbuy;
-CoolState  g_cool;
+SideGate   g_gs;                       // กฎในแท่งฝั่ง SELL / BUY
+SideGate   g_gb;
+SideGate   g_gate_none;                // ไม่มีข้อจำกัด (ป้าย Z บนแท่ง)
 bool       g_bar_changed    = false;   // ขึ้นแท่งใหม่ (TF ของ Z) → ล้างการเฝ้า
 long       g_last_tick_msc  = 0;
 datetime   g_next_try       = 0;
@@ -408,7 +413,6 @@ double EffectiveZ(double zr, double zs) {
 // แท่งลอยตัว (ทิศของการกระชาก): fz = (ราคาเปิด − SMA ตอนเปิดแท่ง) ÷ SD20 → SELL ใช้ +fz / BUY ใช้ −fz (> 0 = พ้นเส้น SMA)
 double ZFloat(int dir, double fz) { return (dir == -1) ? fz : -fz; }
 
-bool FloatOK(int dir, double fz) { return !InpFloatFilter || ZFloat(dir, fz) > InpFloatMin; }
 
 // SMA / SD20 ตอนเปิดแท่งจากแคช Z (ราคาปิด 19 แท่งก่อน + ราคาเปิด) → fz (0 = คำนวณไม่ได้)
 double FloatAtOpen(const ZCache &zc, double open, double &sma, double &sd) {
@@ -656,27 +660,63 @@ string NextNewsText(datetime now) {
 }
 
 //====================================================================
-// 🎯 SIGNAL: เฝ้าค่าสุดขั้ว No new high/low + Cool down (ใช้ร่วมกันทั้ง EA จริงและ Tick Replay)
+// 🎯 SIGNAL: เฝ้าค่าสุดขั้ว No new high/low + กฎในแท่ง (ใช้ร่วมกันทั้ง EA จริงและ Tick Replay)
 //====================================================================
-// ระดับวิกฤต (ตรวจ T3 → T2 → T1), zf = Z_float ในทิศของฝั่งนี้:
-//   3 = Z ตัวใดตัวหนึ่ง > T3 | 2 = Z ทั้งคู่ > T2 (หรือตัวใดตัวหนึ่งเมื่อ zf > InpT2EitherFloat) | 1 = Z ทั้งคู่ > T1 | 0 = ไม่ถึง
-int TierOf(int dir, double zr, double zs, double zf) {
+// แท่ง (TF ของ Z) ที่เวลา t อยู่
+datetime BarStartOf(datetime t) {
+   long per = PeriodSeconds(InpZ_Timeframe);
+   return (per > 0) ? (datetime)((long)t - (long)t % per) : t;
+}
+
+// Z สุดขั้วในทิศของการกระชาก (ตัวที่สูงกว่าระหว่าง Z_reg / Z_SMA)
+double ZHi(int dir, double zr, double zs) { return MathMax((dir == -1) ? zr : -zr, (dir == -1) ? zs : -zs); }
+
+//--- กฎในแท่ง ---
+void GateSync(SideGate &g, datetime bar) {
+   if(g.bar == bar) return;
+   g.bar = bar; g.t12_n = 0; g.first12 = -1; g.t12_block = false; g.re_z = 0.0;
+}
+
+void GateOnOpen(SideGate &g, long pos, int tier, datetime bar) {
+   GateSync(g, bar);
+   if(tier > 2) return;
+   if(g.t12_n == 0) g.first12 = pos;
+   g.t12_n++;
+}
+
+// ไม้ปิด → true = กฎในแท่งเปลี่ยน (ใช้กับแท่งตอนปิด: T1 / T2 ต้องเป็นไม้แรกที่เปิดในแท่งเดียวกัน)
+bool GateOnClose(SideGate &g, long pos, int tier, double ext_z, datetime bar_in, datetime bar_out, bool sl_loss) {
+   GateSync(g, bar_out);
+   if(!sl_loss) return false;
+   if(tier >= 3) { g.re_z = MathMax(g.re_z, ext_z); return true; }
+   if(InpT12BlockOnSL && tier >= 1 && pos == g.first12 && bar_in == bar_out) { g.t12_block = true; return true; }
+   return false;
+}
+
+// ระดับวิกฤต (ตรวจ T4 → T3 → T2 → T1), zf = Z_float ในทิศของฝั่งนี้, g = กฎในแท่งของฝั่งนี้:
+//   4 = Z ตัวใดตัวหนึ่ง > T4 | 3 = > T3 (T3 / T4 ไม่ต้องลอย, หลัง SL ต้อง Z > re_z + step)
+//   2 = Z ทั้งคู่ > T2 (ตัวใดตัวหนึ่งเมื่อ zf > InpT2EitherFloat) | 1 = Z ทั้งคู่ > T1 (T1 / T2 ต้องลอย zf > InpFloatMin และไม่ถูกปิดในแท่ง)
+int TierOf(int dir, double zr, double zs, double zf, const SideGate &g) {
    double a_r = (dir == -1) ? zr : -zr;
    double a_s = (dir == -1) ? zs : -zs;
    double hi  = MathMax(a_r, a_s), lo = MathMin(a_r, a_s);
-   if(hi > InpT3_Z) return 3;
+   bool   t34 = (g.re_z <= 0.0 || hi > g.re_z + InpReEntryZStep);
+   if(t34 && hi > InpT4_Z) return 4;
+   if(t34 && hi > InpT3_Z) return 3;
+   if(g.t12_block || (InpFloatFilter && zf <= InpFloatMin)) return 0;
    if(lo > InpT2_Z || (hi > InpT2_Z && zf > InpT2EitherFloat)) return 2;
    if(lo > InpT1_Z) return 1;
    return 0;
 }
 
-// เวลารอ (ไม่มีค่าสุดขั้วใหม่) ของแต่ละระดับ — T3 ยิงทันที
+// เวลารอ (ไม่มีค่าสุดขั้วใหม่) ของแต่ละระดับ — T4 ยิงทันที
 long TierWaitMs(int tier) {
-   if(tier >= 3) return 0;
+   if(tier >= 4) return 0;
+   if(tier == 3) return (long)InpT3_Sec * 1000;
    return (long)(tier == 2 ? InpT2_Sec : InpT1_Sec) * 1000;
 }
 
-// Lot ตามระดับที่ยิง: T1 = InpLot, T2 = +step, T3 = +2·step
+// Lot ตามระดับที่ยิง: T1 = InpLot, T2 = +step, T3 = +2·step, T4 = +3·step
 double TierLot(int tier) { return NormalizeLot(InpLot + (MathMax(1, tier) - 1) * InpTierLotStep); }
 
 string StageTag(int tier) { return "T" + IntegerToString(tier); }
@@ -690,14 +730,15 @@ void WatchReset(WatchState &w) {
    w.last_new = 0;
    w.started  = 0;
    w.start_px = 0.0;
+   w.peak     = 0.0;
 }
 
-// อัปเดตการเฝ้า: เริ่มเมื่อถึง T1 ขึ้นไป, Z ตัวใดทำค่าสุดขั้วใหม่ = นับเวลาใหม่,
-// ระดับตาม Z ปัจจุบัน (ลึกขึ้น = รอสั้นลง / หลุดเกณฑ์ของระดับ = ลดระดับ นับเวลาจากค่าสุดขั้วล่าสุด),
-// ไม่เข้าเงื่อนไขระดับใดเลย หรือแท่งลอยไม่พอ (zf = Z_float ในทิศของฝั่งนี้) → ยกเลิก แล้วหาสัญญาณใหม่
-void WatchUpdate(WatchState &w, int dir, double zr, double zs, long now_msc, double price, double zf) {
-   bool floating = !InpFloatFilter || zf > InpFloatMin;
-   int  tier     = floating ? TierOf(dir, zr, zs, zf) : 0;
+// อัปเดตการเฝ้า: เริ่มเมื่อเข้าเงื่อนไขระดับใดระดับหนึ่ง, Z ตัวใดทำค่าสุดขั้วใหม่ = นับเวลาใหม่,
+// ระดับ = ลึกสุดที่ไปถึง (Z หลุดเกณฑ์ระหว่างจับเวลาได้ ไม่ยกเลิก / ไม่ลดระดับ), เก็บยอดราคาไว้วาง SL
+//   zf = Z_float ในทิศของฝั่งนี้, g = กฎในแท่ง — ยกเลิกเฉพาะจากภายนอก (ขึ้นแท่งใหม่ / ช่วงห้าม / ไม้ปิด / กฎในแท่งเปลี่ยน)
+void WatchUpdate(WatchState &w, int dir, double zr, double zs, long now_msc, double bid, double ask, double zf, const SideGate &g) {
+   int    tier = TierOf(dir, zr, zs, zf, g);
+   double px   = (dir == -1) ? ask : bid;
    if(!w.active) {
       if(tier < 1) return;
       WatchReset(w);
@@ -708,18 +749,19 @@ void WatchUpdate(WatchState &w, int dir, double zr, double zs, long now_msc, dou
       w.ext_s    = zs;
       w.last_new = now_msc;
       w.started  = now_msc;
-      w.start_px = price;
+      w.start_px = bid;
+      w.peak     = px;
       return;
    }
-   if(tier < 1) { WatchReset(w); return; }
+   if((dir == -1) ? (px > w.peak) : (px < w.peak)) w.peak = px;
    bool nr, ns;
    if(dir == -1) { nr = (zr > w.ext_r + InpNoNewExtEps); ns = (zs > w.ext_s + InpNoNewExtEps); }
    else          { nr = (zr < w.ext_r - InpNoNewExtEps); ns = (zs < w.ext_s - InpNoNewExtEps); }
    if(nr) w.ext_r = zr;
    if(ns) w.ext_s = zs;
    if(nr || ns) w.last_new = now_msc;
-   w.tier = tier;
-   if(tier > w.max_tier) w.max_tier = tier;
+   if(tier > w.tier) w.tier = tier;
+   w.max_tier = w.tier;
 }
 
 long WatchDeadline(const WatchState &w) { return w.last_new + TierWaitMs(w.tier); }
@@ -747,13 +789,10 @@ string TimeBlockReason(datetime t) {
    return "";
 }
 
-// ระยะ SL เลยยอดไส้ของแต่ละระดับ (จุด)
-double SLBeyondPts(int tier) { return (tier >= 3) ? InpSLBeyondT3_Pts : InpSLBeyond_Pts; }
-
-// SL: เลย High (SELL) / Low (BUY) สูงสุดของแท่ง (TF ของ Z) ณ ตอนเปิดไม้ ออกไปตามระดับ
-double SLPrice(int dir, double bar_hi, double bar_lo, int tier) {
-   double d = PtsToPrice(SLBeyondPts(tier));
-   return (dir == -1) ? bar_hi + d : bar_lo - d;
+// SL: เลยยอดตั้งแต่เริ่มเฝ้า (SELL = Ask สูงสุด / BUY = Bid ต่ำสุด) ออกไป InpSLPeak_Pts
+double SLPrice(int dir, double peak) {
+   double d = PtsToPrice(InpSLPeak_Pts);
+   return (dir == -1) ? peak + d : peak - d;
 }
 
 // ตัวกรองตอนยิง (ใช้ร่วมกัน) — เวลาตลาด + เพดานสเปรด
@@ -767,25 +806,6 @@ string EntryBlockReason(int ts, double bid, double ask) {
 bool TradeAllowed() {
    return TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) && MQLInfoInteger(MQL_TRADE_ALLOWED);
 }
-
-//--- Cool down: ชน SL (ขาดทุน) ของ T3 InpCoolT3_SL ครั้ง หรือของ T2 InpCoolT2_SL ครั้งติดต่อกัน → พัก InpCooldown_Min นาที ---
-//    ไม้ที่ปิดแบบอื่น (ไม่ใช่ SL ขาดทุน) ล้างตัวนับ, SL ของ T1 ไม่นับและไม่ล้าง, เริ่มพักแล้วล้างตัวนับ
-void CoolReset(CoolState &c) { c.t2 = 0; c.t3 = 0; c.until = 0; }
-
-// ไม้ระดับ tier ปิด → true = เริ่มพัก
-bool CoolOnClose(CoolState &c, int tier, bool sl_loss, datetime t) {
-   if(!sl_loss) { c.t2 = 0; c.t3 = 0; return false; }
-   bool start = false;
-   if(tier >= 3)      { c.t3++; start = (InpCoolT3_SL > 0 && c.t3 >= InpCoolT3_SL); }
-   else if(tier == 2) { c.t2++; start = (InpCoolT2_SL > 0 && c.t2 >= InpCoolT2_SL); }
-   if(!start) return false;
-   c.t2    = 0;
-   c.t3    = 0;
-   c.until = t + (datetime)(InpCooldown_Min * 60);
-   return true;
-}
-
-bool CoolActive(const CoolState &c, datetime t) { return t < c.until; }
 
 //====================================================================
 // 🕒 SESSION (เวลาเปิด/ปิดตลาดรายสัปดาห์จาก SymbolInfoSessionTrade)
@@ -915,28 +935,28 @@ string TimeStateText(int ts, datetime now) {
 //====================================================================
 // 💼 ORDER MANAGEMENT
 //====================================================================
-// เปิด Market สวนกลับ: stage = ระดับวิกฤต (1-3) → Lot ตามระดับ, TP / SL ชุดเดียวกัน
-bool OpenMarket(int dir, int stage, double bid, double ask, ulong &ticket) {
+// เปิด Market สวนกลับ: stage = ระดับวิกฤต (1-4) → Lot ตามระดับ, SL = ยอดตั้งแต่เริ่มเฝ้า ± InpSLPeak_Pts
+//   คอมเมนต์ "<InpOrderComment> T3 X3.25 R+3.1 S+2.4" (X = Z สุดขั้วในทิศกระชาก) ใช้คืนค่ากฎในแท่งเมื่อรีสตาร์ท
+bool OpenMarket(int dir, int stage, double bid, double ask, double peak, double ext_z, ulong &ticket) {
    double lot   = TierLot(stage);
    double price = (dir == -1) ? bid : ask;
-   double hi    = MathMax(g_bar0_hi, bid);
-   double lo    = (g_bar0_lo > 0.0) ? MathMin(g_bar0_lo, bid) : bid;
+   if(peak <= 0.0) peak = (dir == -1) ? ask : bid;
    double stops = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
-   double sl    = SLPrice(dir, hi, lo, stage);
+   double sl    = SLPrice(dir, peak);
    if(dir == -1) sl = MathMax(sl, ask + stops + _Point);   // เคารพ Stops Level ของโบรก
    else          sl = MathMin(sl, bid - stops - _Point);
    sl = ND(sl);
    double tp    = ND(dir == -1 ? price - PtsToPrice(InpTP_Pts) : price + PtsToPrice(InpTP_Pts));
-   string cmt   = StringFormat("%s %s R%+.1f S%+.1f", InpOrderComment, StageTag(stage), g_z_reg, g_z_sma);
+   string cmt   = StringFormat("%s %s X%.2f R%+.1f S%+.1f", InpOrderComment, StageTag(stage), ext_z, g_z_reg, g_z_sma);
    bool   ok    = (dir == -1) ? trade.Sell(lot, _Symbol, bid, sl, tp, cmt)
                               : trade.Buy (lot, _Symbol, ask, sl, tp, cmt);
    uint rc = trade.ResultRetcode();
    if(ok && (rc == TRADE_RETCODE_DONE || rc == TRADE_RETCODE_PLACED || rc == TRADE_RETCODE_DONE_PARTIAL)) {
       ticket = trade.ResultOrder();
-      PrintFormat("✅ เปิด %s %s %.2f lot @ %s | SL %s (%s แท่ง %s ± %.0f จุด, ห่าง %.0f จุด) | Z_reg %+.2f / Z_SMA %+.2f",
+      PrintFormat("✅ เปิด %s %s %.2f lot @ %s | SL %s (ยอด %s ± %.0f จุด, ห่าง %.0f จุด) | Z_reg %+.2f / Z_SMA %+.2f (สุดขั้ว %.2f)",
                   StageTag(stage), (dir == -1 ? "SELL" : "BUY"), lot, DoubleToString(trade.ResultPrice(), _Digits),
-                  DoubleToString(sl, _Digits), (dir == -1 ? "High" : "Low"), DoubleToString(dir == -1 ? hi : lo, _Digits),
-                  SLBeyondPts(stage), PriceToPts(MathAbs(sl - price)), g_z_reg, g_z_sma);
+                  DoubleToString(sl, _Digits), DoubleToString(peak, _Digits), InpSLPeak_Pts, PriceToPts(MathAbs(sl - price)),
+                  g_z_reg, g_z_sma, ext_z);
       return true;
    }
    PrintFormat("❌ เปิด %s %s ไม่สำเร็จ: %u %s", StageTag(stage), (dir == -1 ? "SELL" : "BUY"), rc, trade.ResultRetcodeDescription());
@@ -950,9 +970,9 @@ int OurPositionsTotal() {
 }
 
 //--------------------------------------------------------------------
-// 🎯 ยิงไม้ + Cool down (EA จริง)
+// 🎯 ยิงไม้ + กฎในแท่ง (EA จริง)
 //--------------------------------------------------------------------
-// ครบเวลาเฝ้าของระดับ (T1 15 วิ / T2 5 วิ / T3 ทันที) → ตัวกรอง → สวนกลับ (ติดตัวกรอง = ทิ้งสัญญาณ)
+// ครบเวลาเฝ้าของระดับ (T1 15 วิ / T2 5 วิ / T3 2 วิ / T4 ทันที) → ตัวกรอง → สวนกลับ (ติดตัวกรอง = ทิ้งสัญญาณ)
 void LiveFire(int dir, int ts, double bid, double ask) {
    WatchState w;
    if(dir == -1) w = g_wsell; else w = g_wbuy;
@@ -970,7 +990,7 @@ void LiveFire(int dir, int ts, double bid, double ask) {
    if(now < g_next_try) return;
 
    ulong ticket = 0;
-   if(OpenMarket(dir, tier, bid, ask, ticket)) {
+   if(OpenMarket(dir, tier, bid, ask, w.peak, ZHi(dir, w.ext_r, w.ext_s), ticket)) {
       g_last_status = StringFormat("เปิดสวนกลับ %s %s (Lot %.2f, ลึกสุด T%d) | สุดขั้ว R %+.2f / S %+.2f → ตอนยิง R %+.2f / S %+.2f",
                                    side, StageTag(tier), TierLot(tier), w.max_tier, w.ext_r, w.ext_s, g_z_reg, g_z_sma);
       WatchReset(g_wsell);
@@ -981,43 +1001,59 @@ void LiveFire(int dir, int ts, double bid, double ask) {
    }
 }
 
-// เรียกทุก Tick และทุก 1 วินาที — ครั้งละ 1 ไม้: มีไม้ถืออยู่ / ช่วงห้าม (นาทีแรก ท้ายแท่ง ข่าว) / พักอยู่ = ไม่เฝ้า (ไม่เก็บสัญญาณเข้าคิว)
+// เรียกทุก Tick และทุก 1 วินาที — ครั้งละ 1 ไม้: ช่วงห้าม (นาทีแรก ท้ายแท่ง ข่าว) / ขึ้นแท่งใหม่ = ล้างการเฝ้า,
+// มีไม้ถืออยู่ = เฝ้าต่อแต่ยังไม่ยิง
 void LiveSignalStep(long now_msc, int ts, double bid, double ask, bool update_watch) {
    if(!g_z_valid) return;
    datetime now_t   = (datetime)(now_msc / 1000);
    bool     busy    = OurPositionsTotal() > 0;
    bool     blocked = (TimeBlockReason(now_t) != "");
-   bool     cool    = CoolActive(g_cool, now_t);
+   datetime bar     = BarStartOf(now_t);
+   GateSync(g_gs, bar);
+   GateSync(g_gb, bar);
 
-   if(busy || blocked || cool || g_bar_changed) {
+   if(blocked || g_bar_changed) {
       WatchReset(g_wsell);
       WatchReset(g_wbuy);
       g_bar_changed = false;
-      if(busy || blocked || cool) return;
+      if(blocked) return;
    }
    if(update_watch) {
-      WatchUpdate(g_wsell, -1, g_z_reg, g_z_sma, now_msc, bid, ZFloat(-1, g_bar0_fz));
-      WatchUpdate(g_wbuy,   1, g_z_reg, g_z_sma, now_msc, bid, ZFloat( 1, g_bar0_fz));
+      WatchUpdate(g_wsell, -1, g_z_reg, g_z_sma, now_msc, bid, ask, ZFloat(-1, g_bar0_fz), g_gs);
+      WatchUpdate(g_wbuy,   1, g_z_reg, g_z_sma, now_msc, bid, ask, ZFloat( 1, g_bar0_fz), g_gb);
    }
+   if(busy) return;
    if(WatchReady(g_wsell, now_msc))     LiveFire(-1, ts, bid, ask);
    else if(WatchReady(g_wbuy, now_msc)) LiveFire( 1, ts, bid, ask);
 }
 
-// ระดับ (T1-T3) จากคอมเมนต์ของดีลเปิด เช่น "7L-CNT T2 R+2.5 S+2.9" (0 = อ่านไม่ได้)
+// ระดับ (T1-T4) จากคอมเมนต์ของดีลเปิด เช่น "7L-CNT T3 X3.25 R+3.1 S+2.4" (0 = อ่านไม่ได้)
 int TierFromComment(string c) {
-   for(int t = 3; t >= 1; t--)
+   for(int t = 4; t >= 1; t--)
       if(StringFind(c, " T" + IntegerToString(t) + " ") >= 0) return t;
    return 0;
 }
 
-// ระดับของโพซิชันจากดีลเปิด (เปลี่ยนรายการประวัติที่เลือกเป็นของโพซิชันนี้)
-int TierOfPosition(long pos_id) {
-   if(!HistorySelectByPosition(pos_id)) return 0;
+// Z สุดขั้ว (X) จากคอมเมนต์ (0 = ไม่มี)
+double ExtZFromComment(string c) {
+   int k = StringFind(c, " X");
+   return (k >= 0) ? StringToDouble(StringSubstr(c, k + 2, 6)) : 0.0;
+}
+
+// ข้อมูลไม้จากดีลเปิดของโพซิชัน (เปลี่ยนรายการประวัติที่เลือกเป็นของโพซิชันนี้)
+bool EntryInfoOfPosition(long pos_id, int &dir, int &tier, double &ext_z, datetime &t_in) {
+   if(!HistorySelectByPosition(pos_id)) return false;
    for(int i = 0; i < HistoryDealsTotal(); i++) {
       ulong d = HistoryDealGetTicket(i);
-      if(d > 0 && HistoryDealGetInteger(d, DEAL_ENTRY) == DEAL_ENTRY_IN) return TierFromComment(HistoryDealGetString(d, DEAL_COMMENT));
+      if(d == 0 || HistoryDealGetInteger(d, DEAL_ENTRY) != DEAL_ENTRY_IN) continue;
+      string c = HistoryDealGetString(d, DEAL_COMMENT);
+      dir   = (HistoryDealGetInteger(d, DEAL_TYPE) == DEAL_TYPE_SELL) ? -1 : 1;
+      tier  = TierFromComment(c);
+      ext_z = ExtZFromComment(c);
+      t_in  = (datetime)HistoryDealGetInteger(d, DEAL_TIME);
+      return true;
    }
-   return 0;
+   return false;
 }
 
 bool IsOurDeal(ulong deal, long entry) {
@@ -1035,46 +1071,69 @@ bool OutDealInfo(ulong deal, long &pos_id, bool &sl_loss, datetime &t) {
    return true;
 }
 
-// ไม้ปิด → นับ SL ของ T2 / T3 / เริ่ม Cool down
-void CoolApply(int tier, bool sl_loss, datetime t, bool live) {
-   if(CoolOnClose(g_cool, tier, sl_loss, t) && live) {
-      g_last_status = StringFormat("❄️ ชน SL ของ T%d → พักถึง %s", tier, TimeToString(g_cool.until, TIME_DATE|TIME_MINUTES));
-      PrintFormat("%s", g_last_status);
-   }
+// ไม้ของ EA ปิด → กฎในแท่งของฝั่งนั้น + ล้างการเฝ้าฝั่งเดียวกัน
+void LiveOnClose(int dir, long pos, int tier, double ext_z, datetime t_in, datetime t_out, bool sl_loss, bool live) {
+   bool changed;
+   if(dir == -1) { changed = GateOnClose(g_gs, pos, tier, ext_z, BarStartOf(t_in), BarStartOf(t_out), sl_loss); WatchReset(g_wsell); }
+   else          { changed = GateOnClose(g_gb, pos, tier, ext_z, BarStartOf(t_in), BarStartOf(t_out), sl_loss); WatchReset(g_wbuy); }
+   if(!changed || !live) return;
+   g_last_status = (tier >= 3) ? StringFormat("%s %s ชน SL → ไม้ T3 / T4 ใหม่ในแท่งนี้ต้อง Z > %.2f", (dir == -1 ? "SELL" : "BUY"), StageTag(tier), ext_z + InpReEntryZStep)
+                               : StringFormat("%s %s ไม้แรกของแท่งชน SL → ปิด T1 / T2 ฝั่งนี้ทั้งแท่ง", (dir == -1 ? "SELL" : "BUY"), StageTag(tier));
+   PrintFormat("✋ %s", g_last_status);
 }
 
-// เริ่ม EA: คืนค่าตัวนับ SL ของ T2 / T3 / เวลาพัก จากประวัติ 7 วันล่าสุด (ระดับอ่านจากคอมเมนต์ของดีลเปิด)
-void RestoreCoolFromHistory() {
-   CoolReset(g_cool);
+// เริ่ม EA: คืนค่ากฎในแท่งของแท่งปัจจุบันจากประวัติ (ระดับ / Z สุดขั้ว อ่านจากคอมเมนต์ของดีลเปิด)
+void RestoreGatesFromHistory() {
    datetime now = ServerNow();
-   if(!HistorySelect(now - (datetime)(7 * DAY_SEC), now + 60)) return;
-   int  total = HistoryDealsTotal();
-   long pos_ids[];
-   int  pos_tier[];
-   for(int i = 0; i < total; i++) {
+   datetime bar = BarStartOf(now);
+   GateSync(g_gs, bar);
+   GateSync(g_gb, bar);
+   if(!HistorySelect(bar - (datetime)DAY_SEC, now + 60)) return;
+   int    total = HistoryDealsTotal();
+   long   pos_ids[];
+   int    pos_dir[], pos_tier[];
+   double pos_x[];
+   long   pos_t[];
+   for(int i = 0; i < total; i++) {   // 1) ข้อมูลดีลเปิดทั้งหมด
       ulong d = HistoryDealGetTicket(i);
       if(d == 0 || !IsOurDeal(d, DEAL_ENTRY_IN)) continue;
       int n = ArraySize(pos_ids);
-      ArrayResize(pos_ids, n + 1);
-      ArrayResize(pos_tier, n + 1);
+      ArrayResize(pos_ids, n + 1); ArrayResize(pos_dir, n + 1); ArrayResize(pos_tier, n + 1);
+      ArrayResize(pos_x, n + 1);   ArrayResize(pos_t, n + 1);
+      string c = HistoryDealGetString(d, DEAL_COMMENT);
       pos_ids[n]  = HistoryDealGetInteger(d, DEAL_POSITION_ID);
-      pos_tier[n] = TierFromComment(HistoryDealGetString(d, DEAL_COMMENT));
+      pos_dir[n]  = (HistoryDealGetInteger(d, DEAL_TYPE) == DEAL_TYPE_SELL) ? -1 : 1;
+      pos_tier[n] = TierFromComment(c);
+      pos_x[n]    = ExtZFromComment(c);
+      pos_t[n]    = HistoryDealGetInteger(d, DEAL_TIME);
    }
-   for(int i = 0; i < total; i++) {
-      ulong    d = HistoryDealGetTicket(i);
-      long     pos;
+   for(int i = 0; i < total; i++) {   // 2) เล่นดีลของแท่งปัจจุบันตามลำดับเวลา
+      ulong d = HistoryDealGetTicket(i);
+      if(d == 0 || (datetime)HistoryDealGetInteger(d, DEAL_TIME) < bar) continue;
+      long pos = HistoryDealGetInteger(d, DEAL_POSITION_ID);
+      int  k   = -1;
+      for(int q = ArraySize(pos_ids) - 1; q >= 0; q--) if(pos_ids[q] == pos) { k = q; break; }
+      if(k < 0) continue;
+      if(IsOurDeal(d, DEAL_ENTRY_IN)) {
+         if(pos_dir[k] == -1) GateOnOpen(g_gs, pos, pos_tier[k], bar); else GateOnOpen(g_gb, pos, pos_tier[k], bar);
+         continue;
+      }
+      long     p;
       bool     sl_loss;
       datetime t;
-      if(d == 0 || !OutDealInfo(d, pos, sl_loss, t)) continue;
-      int tier = 0;
-      for(int k = ArraySize(pos_ids) - 1; k >= 0; k--)
-         if(pos_ids[k] == pos) { tier = pos_tier[k]; break; }
-      CoolApply(tier, sl_loss, t, false);
+      if(OutDealInfo(d, p, sl_loss, t))
+         LiveOnClose(pos_dir[k], pos, pos_tier[k], pos_x[k], (datetime)pos_t[k], t, sl_loss, false);
    }
-   if(CoolActive(g_cool, now))
-      PrintFormat("❄️ คืนค่า Cool down จากประวัติ: พักถึง %s", TimeToString(g_cool.until, TIME_DATE|TIME_MINUTES));
-   else if(g_cool.t2 > 0 || g_cool.t3 > 0)
-      PrintFormat("ℹ️ คืนค่าตัวนับจากประวัติ: ชน SL ของ T2 %d / T3 %d ครั้ง", g_cool.t2, g_cool.t3);
+   if(g_gs.t12_block || g_gb.t12_block || g_gs.re_z > 0.0 || g_gb.re_z > 0.0)
+      PrintFormat("ℹ️ คืนค่ากฎในแท่งจากประวัติ: SELL %s / BUY %s", GateText(g_gs), GateText(g_gb));
+}
+
+// สถานะกฎในแท่งแบบอ่านง่าย
+string GateText(const SideGate &g) {
+   string s = "";
+   if(g.t12_block) s += "T1/T2 ปิด";
+   if(g.re_z > 0.0) s += (s == "" ? "" : ", ") + StringFormat("T3/T4 ต้อง Z > %.2f", g.re_z + InpReEntryZStep);
+   return (s == "") ? "ปกติ" : s;
 }
 
 void CloseAllPositions() {
@@ -1447,7 +1506,7 @@ void SetBarZLabels(datetime t, double hi, double lo, const double &zr[], const d
       bool show = ok[side] && (hit_r || hit_s);
       if(!show) { if(ObjectFind(0, name) >= 0) ObjectDelete(0, name); continue; }
 
-      int   tier       = TierOf(side == 0 ? -1 : 1, zr[side], zs[side], ZFloat(side == 0 ? -1 : 1, fz));
+      int   tier       = TierOf(side == 0 ? -1 : 1, zr[side], zs[side], ZFloat(side == 0 ? -1 : 1, fz), g_gate_none);
       bool  hit_active = (tier >= 1);
       color clr = !hit_active ? InpClrBarZOther : (side == 0 ? InpClrBarZSell : InpClrBarZBuy);
       double price = (side == 0) ? (hi + off) : (lo - off);
@@ -1739,7 +1798,7 @@ void UpdateEntryMarks() {
 
 //====================================================================
 // 🧪 TICK REPLAY — เล่นซ้ำ tick จริงด้วยกติกาเดียวกับ EA
-//   (T1 15 วิ / T2 5 วิ / T3 ทันที / นาทีแรก + ท้ายแท่ง / ข่าว / ครั้งละ 1 ไม้ / Cool down / TP / SL / โล่ / คืนกำไร / ตัดเวลา / ปิดสุดสัปดาห์)
+//   (T1 15 วิ / T2 5 วิ / T3 2 วิ / T4 ทันที / นาทีแรก + ท้ายแท่ง / ข่าว / ครั้งละ 1 ไม้ / กฎในแท่ง / TP / SL ยอด / โล่ / คืนกำไร / ตัดเวลา / ปิดสุดสัปดาห์)
 //====================================================================
 #define RX_OPEN   0
 #define RX_TP     1
@@ -1759,6 +1818,8 @@ struct RTrade {
    double   zr, zs, ext_r, ext_s;
    double   mfe, mae;      // กำไรสูงสุด / ติดลบสูงสุดระหว่างถือ (ราคา)
    double   sl0;           // SL ตอนเปิดไม้ (ก่อนขยับโล่)
+   double   peak;          // ยอดตั้งแต่เริ่มเฝ้าที่ใช้วาง SL
+   int      bar_seq;       // ไม้ลำดับที่เท่าไหร่ของแท่ง (ทุกฝั่ง)
    // ปัจจัย "ใช่ยอดหรือยัง" ณ ตอนยิง (ทิศของการกระชาก = ทิศตรงข้ามไม้สวน, ระยะเป็นจุด)
    bool     a_ok;  double a_brk, a_rng;   // A: ระยะฉีกจาก High / Low สุดขั้วของ 2 แท่งก่อน, ช่วงแท่งเฉลี่ย 20 แท่ง
    bool     b_ok;  double b_m1, b_m0;     // B: ระยะที่ราคาวิ่งไปทางกระชากใน 30 วิล่าสุด / 30 วิก่อนหน้า
@@ -1787,21 +1848,12 @@ struct RBlocked {
    string why;
 };
 
-// จุดเริ่ม Cool down (สำหรับวาด)
-struct RCool {
-   long     msc;
-   int      tier;
-   double   price;
-   datetime until;
-};
-
 RTrade     g_rt[];
 RBlocked   g_rb[];
-RCool      g_rc[];
 int        g_rt_open      = -1;
 int        g_rb_drawn     = 0;
-int        g_rc_drawn     = 0;
-CoolState  g_rp_cool;
+SideGate   g_rp_gs;                  // กฎในแท่งของ Replay (SELL / BUY)
+SideGate   g_rp_gb;
 
 MqlRates   g_rr[];
 int        g_rp_b         = -1;
@@ -1833,10 +1885,9 @@ double     g_contract     = 100.0;
 void ReplayReset() {
    ArrayResize(g_rt, 0);
    ArrayResize(g_rb, 0);
-   ArrayResize(g_rc, 0);
    ArrayResize(g_rr, 0);
-   g_rt_open = -1; g_rb_drawn = 0; g_rc_drawn = 0;
-   CoolReset(g_rp_cool);
+   g_rt_open = -1; g_rb_drawn = 0;
+   ZeroMemory(g_rp_gs); ZeroMemory(g_rp_gb);
    g_rp_b = -1; g_rp_bar_t = 0; g_rp_zc.ok = false; g_rp_bar_chg = false; g_rp_hi = 0.0; g_rp_lo = 0.0;
    WatchReset(g_rp_ws); WatchReset(g_rp_wb);
    ArrayResize(g_tk_msc, 0); ArrayResize(g_tk_bid, 0); g_tk_head = 0;
@@ -1896,19 +1947,23 @@ bool ReplayBarFor(datetime t) {
    return true;
 }
 
-int ReplayOpen(int dir, int stage, long msc, double price) {
+int ReplayOpen(int dir, int stage, long msc, double price, double peak) {
    int i = ArraySize(g_rt);
    ArrayResize(g_rt, i + 1);
-   double hi   = (g_rp_hi > 0.0) ? MathMax(g_rp_hi, price) : price;
-   double lo   = (g_rp_lo > 0.0) ? MathMin(g_rp_lo, price) : price;
    double tp_d = PtsToPrice(InpTP_Pts);
+   if(peak <= 0.0) peak = (dir == -1) ? g_rp_ask : g_rp_bid;
+   datetime bar = BarStartOf((datetime)(msc / 1000));
+   int      seq = 1;
+   for(int k = i - 1; k >= 0 && BarStartOf((datetime)(g_rt[k].msc_in / 1000)) == bar; k--) seq++;
    g_rt[i].msc_in   = msc;
    g_rt[i].dir      = dir;
    g_rt[i].stage    = stage;
    g_rt[i].lot      = TierLot(stage);
    g_rt[i].max_tier = stage;
    g_rt[i].p_in     = price;
-   g_rt[i].sl       = SLPrice(dir, hi, lo, stage);
+   g_rt[i].sl       = SLPrice(dir, peak);
+   g_rt[i].peak     = peak;
+   g_rt[i].bar_seq  = seq;
    g_rt[i].tp       = (dir == -1) ? price - tp_d : price + tp_d;
    g_rt[i].zr       = g_rp_zr;
    g_rt[i].zs       = g_rp_zs;
@@ -1937,7 +1992,7 @@ int ReplayOpen(int dir, int stage, long msc, double price) {
    return i;
 }
 
-// ปิดไม้จำลอง + นับ SL ของ T2 / T3 (ครบ → เริ่ม Cool down)
+// ปิดไม้จำลอง + กฎในแท่ง (ไม้แรก T1 / T2 ชน SL → ปิด T1 / T2, T3 / T4 ชน SL → ไม้ใหม่ต้อง Z สูงกว่า) + ล้างการเฝ้าฝั่งเดียวกัน
 void ReplayClose(long msc_out, double price, int reason) {
    int i = g_rt_open;
    if(i < 0) return;
@@ -1949,11 +2004,12 @@ void ReplayClose(long msc_out, double price, int reason) {
    g_rt[i].usd     = diff * g_rt[i].lot * g_contract;
    ProfitAvgAdd(i, msc_out, diff);
    g_rt_open = -1;
-   if(CoolOnClose(g_rp_cool, g_rt[i].stage, reason == RX_SL && diff < 0.0, (datetime)(msc_out / 1000))) {
-      int k = ArraySize(g_rc);
-      ArrayResize(g_rc, k + 1);
-      g_rc[k].msc = msc_out; g_rc[k].tier = g_rt[i].stage; g_rc[k].price = price; g_rc[k].until = g_rp_cool.until;
-   }
+   bool     sl_loss = (reason == RX_SL && diff < 0.0);
+   datetime b_in    = BarStartOf((datetime)(g_rt[i].msc_in / 1000));
+   datetime b_out   = BarStartOf((datetime)(msc_out / 1000));
+   double   ext_z   = ZHi(g_rt[i].dir, g_rt[i].ext_r, g_rt[i].ext_s);
+   if(g_rt[i].dir == -1) { GateOnClose(g_rp_gs, i, g_rt[i].stage, ext_z, b_in, b_out, sl_loss); WatchReset(g_rp_ws); }
+   else                  { GateOnClose(g_rp_gb, i, g_rt[i].stage, ext_z, b_in, b_out, sl_loss); WatchReset(g_rp_wb); }
 }
 
 void ReplayFire(int dir, long fire_msc) {
@@ -1971,9 +2027,11 @@ void ReplayFire(int dir, long fire_msc) {
       if(dir == -1) WatchReset(g_rp_ws); else WatchReset(g_rp_wb);
       return;
    }
-   int i = ReplayOpen(dir, tier, fire_msc, (dir == -1) ? g_rp_bid : g_rp_ask);
-   g_rt[i].ext_r = w.ext_r;
-   g_rt[i].ext_s = w.ext_s;
+   int i = ReplayOpen(dir, tier, fire_msc, (dir == -1) ? g_rp_bid : g_rp_ask, w.peak);
+   g_rt[i].ext_r    = w.ext_r;
+   g_rt[i].ext_s    = w.ext_s;
+   g_rt[i].max_tier = w.max_tier;
+   if(dir == -1) GateOnOpen(g_rp_gs, i, tier, BarStartOf(t)); else GateOnOpen(g_rp_gb, i, tier, BarStartOf(t));
    ReplaySignalFactors(i, w, dir);
 }
 
@@ -2127,14 +2185,14 @@ void ReplayTick(const MqlTick &tk) {
 
    if(g_rt_open >= 0) ReplayManageTick(msc, bid, ask);   // C) ไม้ที่ถืออยู่
 
-   // D) เฝ้าค่าสุดขั้ว: ไม่มีไม้ + ไม่อยู่ในช่วงห้าม (นาทีแรก / ท้ายแท่ง / ข่าว) + ไม่ได้พัก (ขึ้นแท่งใหม่ล้างการเฝ้า)
-   bool idle    = (g_rt_open < 0);
+   // D) เฝ้าค่าสุดขั้ว: ช่วงห้าม (นาทีแรก / ท้ายแท่ง / ข่าว) / ขึ้นแท่งใหม่ = ล้างการเฝ้า, มีไม้ถืออยู่ = เฝ้าต่อ (ยิงหลังไม้ปิด)
    bool blocked = (TimeBlockReason(t) != "");
-   bool cool    = CoolActive(g_rp_cool, t);
-   if(!idle || blocked || cool || !zok || g_rp_bar_chg) { WatchReset(g_rp_ws); WatchReset(g_rp_wb); }
-   if(idle && !blocked && !cool && zok) {
-      WatchUpdate(g_rp_ws, -1, zr, zs, msc, bid, ZFloat(-1, g_rp_fz));
-      WatchUpdate(g_rp_wb,  1, zr, zs, msc, bid, ZFloat( 1, g_rp_fz));
+   GateSync(g_rp_gs, BarStartOf(t));
+   GateSync(g_rp_gb, BarStartOf(t));
+   if(blocked || !zok || g_rp_bar_chg) { WatchReset(g_rp_ws); WatchReset(g_rp_wb); }
+   if(!blocked && zok) {
+      WatchUpdate(g_rp_ws, -1, zr, zs, msc, bid, ask, ZFloat(-1, g_rp_fz), g_rp_gs);
+      WatchUpdate(g_rp_wb,  1, zr, zs, msc, bid, ask, ZFloat( 1, g_rp_fz), g_rp_gb);
    }
    g_rp_bar_chg = false;
 
@@ -2218,7 +2276,8 @@ void DrawReplayTrade(int i) {
                                  tag, (is_sell ? "SELL" : "BUY"), g_rt[i].lot, DoubleToString(g_rt[i].p_in, _Digits),
                                  TimeToString(t_in, TIME_DATE|TIME_SECONDS), g_rt[i].zr, g_rt[i].zs);
    tipText += StringFormat(" | สุดขั้วระหว่างเฝ้า R %+.2f / S %+.2f | ลึกสุด T%d", g_rt[i].ext_r, g_rt[i].ext_s, g_rt[i].max_tier);
-   tipText += StringFormat("\nห่างปลายไส้ %.0f จุด | SL ตอนเข้า %s (ไส้ ± %.0f จุด)", gap, DoubleToString(g_rt[i].sl0, _Digits), SLBeyondPts(g_rt[i].stage));
+   tipText += StringFormat("\nห่างปลายไส้ %.0f จุด | SL ตอนเข้า %s (ยอด %s ± %.0f จุด) | ไม้ที่ %d ของแท่ง", gap, DoubleToString(g_rt[i].sl0, _Digits),
+                           DoubleToString(g_rt[i].peak, _Digits), InpSLPeak_Pts, g_rt[i].bar_seq);
    if(!open)
       tipText += StringFormat("\nออก %s @ %s (%s) | %+.0f จุด | $%+.2f | ถือ %d วินาที",
                               ReplayReasonName(g_rt[i].reason), DoubleToString(g_rt[i].p_out, _Digits),
@@ -2251,28 +2310,9 @@ void DrawReplayBlocked(int k) {
                                 TimeToString(t, TIME_DATE|TIME_SECONDS), DoubleToString(g_rb[k].price, _Digits), g_rb[k].why));
 }
 
-void DrawReplayCool(int k) {
-   datetime t  = (datetime)(g_rc[k].msc / 1000);
-   string   nm = OBJ_PREFIX + "RP_C_" + IntegerToString(g_rc[k].msc);
-   if(ObjectFind(0, nm) < 0) {
-      ObjectCreate(0, nm, OBJ_TEXT, 0, t, g_rc[k].price);
-      ObjectSetString(0,  nm, OBJPROP_FONT, "Arial Bold");
-      ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, 8);
-      ObjectSetInteger(0, nm, OBJPROP_COLOR, InpClrSimCool);
-      ObjectSetInteger(0, nm, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
-      ObjectSetInteger(0, nm, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, nm, OBJPROP_HIDDEN, true);
-   }
-   int need = (g_rc[k].tier >= 3) ? InpCoolT3_SL : InpCoolT2_SL;
-   ObjectSetString(0, nm, OBJPROP_TEXT, StringFormat("  พัก %d นาที (SL %s ×%d)", InpCooldown_Min, StageTag(g_rc[k].tier), need));
-   ObjectSetString(0, nm, OBJPROP_TOOLTIP, StringFormat("Cool down: ชน SL ของ %s %d ครั้ง → หยุดเฝ้า/เปิดไม้ %s ถึง %s",
-                   StageTag(g_rc[k].tier), need, TimeToString(t, TIME_DATE|TIME_MINUTES), TimeToString(g_rc[k].until, TIME_DATE|TIME_MINUTES)));
-}
-
 void ReplayDraw() {
    for(int i = 0; i < ArraySize(g_rt); i++)
       if(!g_rt[i].drawn_final) DrawReplayTrade(i);
-   for(; g_rc_drawn < ArraySize(g_rc); g_rc_drawn++) DrawReplayCool(g_rc_drawn);
    if(InpShowReplayBlocked)
       for(; g_rb_drawn < ArraySize(g_rb); g_rb_drawn++) DrawReplayBlocked(g_rb_drawn);
 }
@@ -2280,8 +2320,8 @@ void ReplayDraw() {
 string ReplayStatsText() {
    if(!InpShowReplay) return "";
    int    n = 0, w = 0, c_tp = 0, c_sl = 0, c_cut = 0, c_tr = 0, c_wk = 0, c_gb = 0;
-   int    cnt[4];
-   double usd_st[4];
+   int    cnt[5];
+   double usd_st[5];
    ArrayInitialize(cnt, 0);
    ArrayInitialize(usd_st, 0.0);
    double usd = 0.0, peak = 0.0, dd = 0.0;
@@ -2292,7 +2332,7 @@ string ReplayStatsText() {
       usd += g_rt[i].usd;
       if(usd > peak) peak = usd;
       if(usd - peak < dd) dd = usd - peak;
-      int st = MathMax(1, MathMin(3, g_rt[i].stage));
+      int st = MathMax(1, MathMin(4, g_rt[i].stage));
       cnt[st]++;
       usd_st[st] += g_rt[i].usd;
       switch(g_rt[i].reason) {
@@ -2304,10 +2344,9 @@ string ReplayStatsText() {
                            InpReplayDays, g_rp_status, n, (n > 0 ? 100.0 * w / n : 0.0), usd, dd,
                            c_tp, c_sl, c_tr, c_gb, c_cut, c_wk, ArraySize(g_rb));
    string tail = "";
-   if(g_rt_open >= 0)                                          tail = " | มีไม้จำลองถืออยู่";
-   else if(CoolActive(g_rp_cool, (datetime)(g_rp_msc / 1000))) tail = " | จำลองกำลังพัก";
-   s += StringFormat("\n   T1 %d ไม้ ($%+.2f) | T2 %d ไม้ ($%+.2f) | T3 %d ไม้ ($%+.2f) | Cool down %d ครั้ง%s",
-                     cnt[1], usd_st[1], cnt[2], usd_st[2], cnt[3], usd_st[3], ArraySize(g_rc), tail);
+   if(g_rt_open >= 0) tail = " | มีไม้จำลองถืออยู่";
+   s += StringFormat("\n   T1 %d ไม้ ($%+.2f) | T2 %d ไม้ ($%+.2f) | T3 %d ไม้ ($%+.2f) | T4 %d ไม้ ($%+.2f)%s",
+                     cnt[1], usd_st[1], cnt[2], usd_st[2], cnt[3], usd_st[3], cnt[4], usd_st[4], tail);
    if(n > 0) {   // ระยะกำไรระหว่างถือ เฉลี่ยต่อไม้
       double s_min = 0.0, s_max = 0.0, s_avg = 0.0;
       for(int i = 0; i < ArraySize(g_rt); i++) {
@@ -2361,15 +2400,16 @@ void ReplayWriteCSV(int done) {
    string fn = ReplayCSVName();
    int h = FileOpen(fn, FILE_WRITE | FILE_TXT | FILE_ANSI);
    if(h == INVALID_HANDLE) { PrintFormat("⚠️ เขียนไฟล์ %s ไม่สำเร็จ (error %d)", fn, GetLastError()); return; }
-   FileWriteString(h, "time_in,side,tier,max_tier,lot,price_in,sl_init_pts,z_reg,z_sma,ext_zreg,ext_zsma,z_float,z_open,z_gap," +
+   FileWriteString(h, "time_in,side,tier,max_tier,bar_seq,lot,price_in,sl_peak,sl_init_pts,z_reg,z_sma,ext_zreg,ext_zsma,z_float,z_open,z_gap," +
                       "a_break_pts,a_avg_range_pts,a_break_ratio,b_move_last30_pts,b_move_prev30_pts," +
                       "c_zreg_drop,c_zsma_drop,d_pull_pts,d_pull_frac,e_ticks_per_sec_last15,e_ticks_per_sec_prev60," +
                       "time_out,exit,hold_sec,pnl_pts,usd,profit_min_pts,profit_max_pts,profit_avg_pts\r\n");
    for(int i = 0; i < ArraySize(g_rt); i++) {
       if(g_rt[i].reason == RX_OPEN) continue;
-      string ln = StringFormat("%s,%s,%d,%d,%.2f,%s,%.0f,%.3f,%.3f,%.3f,%.3f,",
+      string ln = StringFormat("%s,%s,%d,%d,%d,%.2f,%s,%s,%.0f,%.3f,%.3f,%.3f,%.3f,",
                                TimeToString((datetime)(g_rt[i].msc_in / 1000), TIME_DATE|TIME_SECONDS), (g_rt[i].dir == -1 ? "SELL" : "BUY"),
-                               g_rt[i].stage, g_rt[i].max_tier, g_rt[i].lot, DoubleToString(g_rt[i].p_in, _Digits),
+                               g_rt[i].stage, g_rt[i].max_tier, g_rt[i].bar_seq, g_rt[i].lot, DoubleToString(g_rt[i].p_in, _Digits),
+                               DoubleToString(g_rt[i].peak, _Digits),
                                PriceToPts(MathAbs(g_rt[i].sl0 - g_rt[i].p_in)), g_rt[i].zr, g_rt[i].zs, g_rt[i].ext_r, g_rt[i].ext_s);
       ln += StringFormat("%.3f,%.3f,%.3f,", g_rt[i].z_float, g_rt[i].z_open, g_rt[i].z_gap);
       bool af = g_rt[i].a_ok && g_rt[i].a_rng > 0.0;
@@ -2591,9 +2631,9 @@ void UpdateLiveZLabel(double bid) {
    ObjectSetString(0,  LABEL_LIVE_Z, OBJPROP_TEXT, text);
    ObjectSetInteger(0, LABEL_LIVE_Z, OBJPROP_COLOR, LiveZColor(g_z));
    ObjectSetString(0,  LABEL_LIVE_Z, OBJPROP_TOOLTIP,
-                   StringFormat("Z_reg %+.3f (กลาง %s) | Z_SMA %+.3f (SMA20 %s) | Z ตัวใดก็ได้ T1 > %.2f / T2 > %.2f / T3 > %.2f + แท่งลอยพ้น SMA",
+                   StringFormat("Z_reg %+.3f (กลาง %s) | Z_SMA %+.3f (SMA20 %s) | T1 ทั้งคู่ > %.2f / T2 ทั้งคู่ > %.2f (ลอย ≤ %.1f) / T3 ตัวใด > %.2f / T4 ตัวใด > %.2f",
                                 g_z_reg, DoubleToString(g_center, _Digits), g_z_sma, DoubleToString(g_sma_mean, _Digits),
-                                InpT1_Z, InpT2_Z, InpT3_Z));
+                                InpT1_Z, InpT2_Z, InpT2EitherFloat, InpT3_Z, InpT4_Z));
 
    g_live_z_text = text;
    g_live_z_y    = y;
@@ -2622,37 +2662,32 @@ string WatchShortText(const WatchState &w, long now_msc) {
 string WatchText(const WatchState &w, bool is_sell, long now_msc) {
    datetime t   = (datetime)(now_msc / 1000);
    string   sg  = is_sell ? "+" : "−";
-   if(OurPositionsTotal() > 0) return "⏸️ มีไม้ถืออยู่ (ครั้งละ 1 ไม้)";
-   if(CoolActive(g_cool, t))   return StringFormat("❄️ Cool down อีก %s", FormatDuration((long)(g_cool.until - t)));
    string blk = TimeBlockReason(t);
    if(blk != "")               return "⏳ ห้ามเฝ้า: " + blk;
-   int    dir = is_sell ? -1 : 1;
-   double zf  = ZFloat(dir, g_bar0_fz);
+   int      dir  = is_sell ? -1 : 1;
+   double   zf   = ZFloat(dir, g_bar0_fz);
+   SideGate g;
+   if(is_sell) g = g_gs; else g = g_gb;
+   string   gate = (g.bar == BarStartOf(t) && (g.t12_block || g.re_z > 0.0)) ? " | แท่งนี้: " + GateText(g) : "";
+   string   hold = (OurPositionsTotal() > 0) ? " | ⏸️ มีไม้ถืออยู่ (ยิงหลังไม้ปิด)" : "";
    if(w.active) {
       double left = (double)(WatchDeadline(w) - now_msc) / 1000.0;
       if(left < 0.0) left = 0.0;
-      string need = (w.tier >= 3) ? StringFormat("Z ตัวใด > %s%.2f, ยิงทันที", sg, InpT3_Z)
-                  : (w.tier == 2)  ? StringFormat("Z %s > %s%.2f, รอ %d วิ", (zf > InpT2EitherFloat ? "ตัวใด (ลอย > " + DoubleToString(InpT2EitherFloat, 1) + ")" : "ทั้งคู่"),
-                                                  sg, InpT2_Z, InpT2_Sec)
-                                   : StringFormat("Z ทั้งคู่ > %s%.2f, รอ %d วิ", sg, InpT1_Z, InpT1_Sec);
-      need += StringFormat(", ลอยตัว %+.2f", zf);
-      return StringFormat("👀 เฝ้า %s (%s, Lot %.2f) | สุดขั้ว R %+.2f / S %+.2f | ไม่มีค่าใหม่มา %.1f วิ → ยิงในอีก %.1f วิ",
-                          StageTag(w.tier), need, TierLot(w.tier), w.ext_r, w.ext_s, (double)(now_msc - w.last_new) / 1000.0, left);
+      string need = (w.tier >= 4) ? StringFormat("Z ตัวใด > %s%.2f, ยิงทันที", sg, InpT4_Z)
+                  : (w.tier == 3) ? StringFormat("Z ตัวใด > %s%.2f, รอ %d วิ", sg, InpT3_Z, InpT3_Sec)
+                  : (w.tier == 2) ? StringFormat("Z %s > %s%.2f, รอ %d วิ", (zf > InpT2EitherFloat ? "ตัวใด (ลอย > " + DoubleToString(InpT2EitherFloat, 1) + ")" : "ทั้งคู่"),
+                                                 sg, InpT2_Z, InpT2_Sec)
+                                  : StringFormat("Z ทั้งคู่ > %s%.2f, รอ %d วิ", sg, InpT1_Z, InpT1_Sec);
+      return StringFormat("👀 เฝ้า %s (%s, Lot %.2f) | สุดขั้ว R %+.2f / S %+.2f | ยอด %s → SL %s | ไม่มีค่าใหม่มา %.1f วิ → ยิงในอีก %.1f วิ%s%s",
+                          StageTag(w.tier), need, TierLot(w.tier), w.ext_r, w.ext_s, DoubleToString(w.peak, _Digits),
+                          DoubleToString(SLPrice(dir, w.peak), _Digits), (double)(now_msc - w.last_new) / 1000.0, left, hold, gate);
    }
-   if(g_z_valid && TierOf(dir, g_z_reg, g_z_sma, zf) >= 1 && !FloatOK(dir, g_bar0_fz))
-      return StringFormat("⏸️ Z ถึงเกณฑ์แต่แท่งลอยไม่พอ (Z_float %+.2f ต้อง > %.2f)", zf, InpFloatMin);
-   if(InpFloatFilter && zf <= InpFloatMin)
-      return StringFormat("⏸️ แท่งนี้ลอยไม่พอ (Z_float %+.2f ต้อง > %.2f) → ไม่เฝ้าทั้งแท่ง", zf, InpFloatMin);
-   return StringFormat("✅ รอ T1 Z ทั้งคู่ > %s%.2f / T2 Z %s > %s%.2f / T3 Z ตัวใด > %s%.2f (Z_float %+.2f)",
-                       sg, InpT1_Z, (zf > InpT2EitherFloat ? "ตัวใด" : "ทั้งคู่"), sg, InpT2_Z, sg, InpT3_Z, zf);
-}
-
-string CoolText(datetime now) {
-   if(InpCoolT2_SL <= 0 && InpCoolT3_SL <= 0) return "ปิด";
-   string s = StringFormat("ชน SL ของ T2 %d / %d | T3 %d / %d", g_cool.t2, InpCoolT2_SL, g_cool.t3, InpCoolT3_SL);
-   if(CoolActive(g_cool, now))
-      s += StringFormat(" | ❄️ พักถึง %s (อีก %s)", TimeToString(g_cool.until, TIME_DATE|TIME_MINUTES), FormatDuration((long)(g_cool.until - now)));
-   return s;
+   string t12 = g.t12_block ? "T1/T2 ปิดแท่งนี้"
+              : (InpFloatFilter && zf <= InpFloatMin) ? StringFormat("T1/T2 ปิด (ลอย %+.2f ≤ %.2f)", zf, InpFloatMin)
+              : StringFormat("T1 Z ทั้งคู่ > %s%.2f / T2 Z %s > %s%.2f", sg, InpT1_Z, (zf > InpT2EitherFloat ? "ตัวใด" : "ทั้งคู่"), sg, InpT2_Z);
+   string t34 = (g.re_z > 0.0) ? StringFormat("T3/T4 ต้อง Z > %s%.2f", sg, g.re_z + InpReEntryZStep)
+                               : StringFormat("T3 Z ตัวใด > %s%.2f / T4 > %s%.2f", sg, InpT3_Z, sg, InpT4_Z);
+   return StringFormat("✅ รอ %s | %s (Z_float %+.2f)%s", t12, t34, zf, hold);
 }
 
 string PositionLines(double bid, double ask, datetime now) {
@@ -2707,8 +2742,8 @@ void UpdateDashboard(int ts, datetime now) {
    string news_str = NextNewsText(now);
 
    long   now_msc = MathMax(g_last_tick_msc, (long)now * 1000);
-   string msg = StringFormat("=== 📊 7-Lines Counter EA v12.45 (แท่งลอย Z_float > %.2f | T1 Z ทั้งคู่>%.1f %d วิ / T2 Z ทั้งคู่>%.1f %d วิ (ลอย>%.1f ตัวเดียวได้) / T3 Z ตัวใด>%.1f ทันที | SL ไส้ ± %.0f / T3 ± %.0f | คืนกำไร %.0f%%) ===\n",
-                             InpFloatMin, InpT1_Z, InpT1_Sec, InpT2_Z, InpT2_Sec, InpT2EitherFloat, InpT3_Z, InpSLBeyond_Pts, InpSLBeyondT3_Pts, InpGiveback_Pct);
+   string msg = StringFormat("=== 📊 7-Lines Counter EA v12.50 (T1/T2 ลอย > %.2f: T1 Z ทั้งคู่>%.1f %d วิ / T2 Z ทั้งคู่>%.1f %d วิ (ลอย>%.1f ตัวเดียวได้) | T3 Z ตัวใด>%.1f %d วิ / T4 >%.1f ทันที | SL ยอด ± %.0f | คืนกำไร %.0f%%) ===\n",
+                             InpFloatMin, InpT1_Z, InpT1_Sec, InpT2_Z, InpT2_Sec, InpT2EitherFloat, InpT3_Z, InpT3_Sec, InpT4_Z, InpSLPeak_Pts, InpGiveback_Pct);
    msg += StringFormat("Z (%s, %d) : %s\n", EnumToString(InpZ_Timeframe), InpZ_Period, z_str);
    msg += StringFormat("Z แท่งที่เพิ่งปิด : R %+.2f / S %+.2f%s\n", g_prev_close_zr, g_prev_close_zs, (news_str == "" ? "" : " | " + news_str));
    if(g_z_valid)   // ÷ SD20, + = เหนือ SMA (ฝั่ง SELL ใช้ค่านี้ / ฝั่ง BUY ใช้ค่าลบ)
@@ -2719,7 +2754,7 @@ void UpdateDashboard(int ts, datetime now) {
    msg += "BUY  : " + WatchText(g_wbuy,  false, now_msc) + "\n";
    msg += StringFormat("ออเดอร์ : BUY %d / SELL %d | สเปรด %.0f / %.0f จุด\n",
                        buys, sells, PriceToPts(ask - bid), InpMaxSpread_Pts);
-   msg += "Cool down : " + CoolText(now) + "\n";
+   msg += StringFormat("กฎในแท่ง : SELL %s | BUY %s\n", (g_gs.bar == BarStartOf(now) ? GateText(g_gs) : "ปกติ"), (g_gb.bar == BarStartOf(now) ? GateText(g_gb) : "ปกติ"));
    msg += "เวลาตลาด : " + TimeStateText(ts, now) + "\n";
    if(InpShow7Lines) msg += "เส้น 7 เส้น : " + g_lines_status + "\n";
    msg += "สถานะล่าสุด : " + g_last_status;
@@ -2740,13 +2775,13 @@ int OnInit() {
    if(InpLinesBars < 10 || InpLinesBars > 2000) { Print("❌ InpLinesBars ต้องอยู่ระหว่าง 10-2000"); return(INIT_PARAMETERS_INCORRECT); }
    if(InpBarZBars < 1 || InpBarZBars > 20000) { Print("❌ InpBarZBars ต้องอยู่ระหว่าง 1-20000"); return(INIT_PARAMETERS_INCORRECT); }
    if(InpReplayDays < 1 || InpReplayDays > 60) { Print("❌ InpReplayDays ต้องอยู่ระหว่าง 1-60"); return(INIT_PARAMETERS_INCORRECT); }
-   if(InpT1_Z <= 0.0 || InpT2_Z < InpT1_Z || InpT3_Z < InpT2_Z ||
-      InpT1_Sec < 0 || InpT2_Sec < 0 || InpNoNewExtEps < 0.0 || InpTierLotStep < 0.0) {
-      Print("❌ ค่า Z ระดับวิกฤต (ต้อง T1 ≤ T2 ≤ T3) / เวลาเฝ้า / Lot ต่อระดับ ไม่ถูกต้อง");
+   if(InpT1_Z <= 0.0 || InpT2_Z < InpT1_Z || InpT3_Z < InpT2_Z || InpT4_Z < InpT3_Z ||
+      InpT1_Sec < 0 || InpT2_Sec < 0 || InpT3_Sec < 0 || InpNoNewExtEps < 0.0 || InpTierLotStep < 0.0 || InpReEntryZStep < 0.0) {
+      Print("❌ ค่า Z ระดับวิกฤต (ต้อง T1 ≤ T2 ≤ T3 ≤ T4) / เวลาเฝ้า / Lot ต่อระดับ / ระยะ Z เข้าใหม่ ไม่ถูกต้อง");
       return(INIT_PARAMETERS_INCORRECT);
    }
    if(InpLot <= 0.0) { Print("❌ Lot ไม่ถูกต้อง"); return(INIT_PARAMETERS_INCORRECT); }
-   if(InpTP_Pts <= 0.0 || InpSLBeyond_Pts < 0.0 || InpSLBeyondT3_Pts < 0.0 || InpTrailDist_Pts <= 0.0 || InpTrailInterval_Sec < 1) {
+   if(InpTP_Pts <= 0.0 || InpSLPeak_Pts < 0.0 || InpTrailDist_Pts <= 0.0 || InpTrailInterval_Sec < 1) {
       Print("❌ TP / SL / ระยะโล่ / รอบไล่จี้ ไม่ถูกต้อง");
       return(INIT_PARAMETERS_INCORRECT);
    }
@@ -2756,8 +2791,8 @@ int OnInit() {
    }
    long per = PeriodSeconds(InpZ_Timeframe);
    if(InpSigmaFloorMult < 0.0 || InpBarStartDelay_Sec < 0 || InpBarEndBlock_Sec < 0 ||
-      InpBarStartDelay_Sec + InpBarEndBlock_Sec >= per || InpCoolT2_SL < 0 || InpCoolT3_SL < 0 || InpCooldown_Min < 1 || InpNewsBlock_Min < 0) {
-      Print("❌ ค่าพื้นตัวหาร / เวลาต้น-ท้ายแท่ง / Cool down / ช่วงข่าว ไม่ถูกต้อง");
+      InpBarStartDelay_Sec + InpBarEndBlock_Sec >= per || InpNewsBlock_Min < 0) {
+      Print("❌ ค่าพื้นตัวหาร / เวลาต้น-ท้ายแท่ง / ช่วงข่าว ไม่ถูกต้อง");
       return(INIT_PARAMETERS_INCORRECT);
    }
    if(AccountInfoInteger(ACCOUNT_MARGIN_MODE) != ACCOUNT_MARGIN_MODE_RETAIL_HEDGING) {
@@ -2822,7 +2857,8 @@ int OnInit() {
    g_gb_retry = 0;
 
    RefreshNews(ServerNow());
-   RestoreCoolFromHistory();   // ตัวนับ SL ของ T2 / T3 / เวลาพัก ไม่หายเมื่อรีสตาร์ท
+   ZeroMemory(g_gs); ZeroMemory(g_gb); ZeroMemory(g_gate_none);
+   RestoreGatesFromHistory();   // กฎในแท่งของแท่งปัจจุบันไม่หายเมื่อรีสตาร์ท
 
    ObjectsDeleteAll(0, OBJ_PREFIX);
    if(g_draw && InpShow7Lines) RebuildLines();   // ถ้าประวัติยังโหลดไม่ครบ จะลองใหม่ใน OnTimer
@@ -2901,10 +2937,23 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    if(trans.type != TRADE_TRANSACTION_DEAL_ADD || trans.deal == 0) return;
    if(!HistoryDealSelect(trans.deal)) return;
    AddEntryMarkFromDeal(trans.deal);
+   if(!HistoryDealSelect(trans.deal)) return;
+   if(IsOurDeal(trans.deal, DEAL_ENTRY_IN)) {   // ไม้เปิด → นับไม้ T1 / T2 ไม้แรกของแท่ง
+      long     pos  = HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID);
+      int      tier = TierFromComment(HistoryDealGetString(trans.deal, DEAL_COMMENT));
+      datetime bar  = BarStartOf((datetime)HistoryDealGetInteger(trans.deal, DEAL_TIME));
+      if(HistoryDealGetInteger(trans.deal, DEAL_TYPE) == DEAL_TYPE_SELL) GateOnOpen(g_gs, pos, tier, bar);
+      else                                                                GateOnOpen(g_gb, pos, tier, bar);
+      return;
+   }
    long     pos;
    bool     sl_loss;
    datetime t;
-   if(!HistoryDealSelect(trans.deal) || !OutDealInfo(trans.deal, pos, sl_loss, t)) return;
-   CoolApply(TierOfPosition(pos), sl_loss, t, true);   // ไม้ปิด → นับ SL ของ T2 / T3 / เริ่ม Cool down
+   if(!OutDealInfo(trans.deal, pos, sl_loss, t)) return;
+   int      dir, tier;
+   double   ext_z;
+   datetime t_in;
+   if(EntryInfoOfPosition(pos, dir, tier, ext_z, t_in))
+      LiveOnClose(dir, pos, tier, ext_z, t_in, t, sl_loss, true);   // ไม้ปิด → กฎในแท่ง + ล้างการเฝ้าฝั่งเดียวกัน
 }
 //+------------------------------------------------------------------+
