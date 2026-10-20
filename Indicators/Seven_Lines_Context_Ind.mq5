@@ -18,12 +18,13 @@
 // 🏷️ ป้ายแนวนอน: แท่งที่ Z_reg หรือ Z_SMA ที่ High / Low เกิน ±2.00 → แสดง Z ทั้ง 6 แบบ
 //    ป้ายที่อยู่ใกล้กันถูกเรียงเป็นชั้นตามความกว้างตัวอักษรจริงบนจอ → ไม่ซ้อนกัน (จัดใหม่เมื่อซูม / เลื่อนกราฟ)
 //    เส้นโยงจากปลายไส้ (High / Low) ของแท่งนั้นขึ้น / ลงไปถึงป้าย
-//    ใช้ได้ทุก TF (คำนวณบน TF ของกราฟ): หน้าต่าง / Speed / แท่งสถิติ นับเป็นจำนวนแท่งของ TF นั้น
+//    ใช้ได้ทุก TF (คำนวณบน TF ของกราฟ) — ตั้งค่าอัตโนมัติ: ค่าที่ตั้งเป็นจำนวนแท่งของ TF อ้างอิง (M15)
+//    แล้วแปลงเป็นจำนวนแท่งของ TF กราฟให้ได้ช่วงเวลาเท่ากัน (Speed / แท่งสถิติ เสมอ, หน้าต่าง Z ถ้าเปิด)
 // 📊 ตารางสถิติ (มุมล่างซ้าย): ทุกแท่งในประวัติที่ |Z| > 2.00 แยกตามนิยาม
 //    → % ที่ราคากลับไปแตะเส้นภายใน 8 แท่ง + ระยะไปต่อสูงสุดเฉลี่ยใน 8 แท่ง (ใช้เทียบว่านิยามไหนดีดกลับจริง)
 //
 #property copyright   "Commander's Quant System"
-#property version     "2.20"
+#property version     "2.30"
 #property description "Z หลายนิยาม (ถดถอย / SMA / ถดถอยโค้ง / Median / Speed / EMA) + ป้ายค่า Z + สถิติการดีดกลับ"
 #property indicator_chart_window
 #property indicator_buffers 17
@@ -78,10 +79,15 @@
 //====================================================================
 // 🎛️ INPUT PARAMETERS
 //====================================================================
+input group "=== ตั้งค่าอัตโนมัติตาม TF ของกราฟ ==="
+input bool            InpAutoTF       = true;       // แปลงจำนวนแท่ง (Speed / แท่งสถิติ) ให้ได้ช่วงเวลาเท่ากับบน TF อ้างอิง
+input bool            InpAutoZWindow  = false;      // แปลงหน้าต่าง Z ด้วย (ปิด = 20 แท่งของ TF กราฟเสมอ)
+input ENUM_TIMEFRAMES InpRefTF        = PERIOD_M15; // TF อ้างอิงของค่าจำนวนแท่งด้านล่าง (TF เดียวกับ Z ของ Counter EA)
+
 input group "=== Z (สูตรเดียวกับ Counter EA) ==="
 input int    InpZ_Period          = 20;      // จำนวนแท่งของหน้าต่าง (ทุกนิยาม)
 input double InpSigmaFloorMult    = 0.50;    // พื้นตัวหาร = ค่านี้ × SD ของการเปลี่ยนแปลงราคาต่อแท่ง
-input int    InpSpeedBars         = 4;       // V: เทียบกับราคาปิดกี่แท่งก่อน
+input int    InpSpeedBars         = 4;       // V: เทียบกับราคาปิดกี่แท่งก่อน (แท่งของ TF อ้างอิงเมื่อเปิดอัตโนมัติ)
 
 input group "=== เส้นบนกราฟ ==="
 input bool   InpShowReg           = true;    // R: วาดเส้นถดถอย
@@ -107,7 +113,7 @@ input bool   InpShowLeader        = true;    // เส้นโยงจาก�
 input group "=== ตารางสถิติ ==="
 input bool   InpShowStats         = true;    // แสดงตารางสถิติการดีดกลับ (มุมล่างซ้าย)
 input double InpStatZ             = 2.00;    // นับแท่งที่ |Z| เกินค่านี้
-input int    InpStatBars          = 8;       // ราคาต้องกลับแตะเส้นภายในกี่แท่ง
+input int    InpStatBars          = 8;       // ราคาต้องกลับแตะเส้นภายในกี่แท่ง (แท่งของ TF อ้างอิงเมื่อเปิดอัตโนมัติ)
 
 input group "=== สี ==="
 input color  InpClrReg            = clrGold;           // R
@@ -129,7 +135,7 @@ const string Z_NAME[ZN]  = {"ถดถอย", "SMA20", "ถดถอยโค�
 
 struct ZSet {
    double z[ZN];
-   double ctr[ZN];   // ราคาเส้นกลาง (V = ราคาปิด InpSpeedBars แท่งก่อน)
+   double ctr[ZN];   // ราคาเส้นกลาง (V = ราคาปิด g_spd แท่งก่อน)
    double sig[ZN];   // ตัวหาร (ราคา)
 };
 
@@ -141,6 +147,9 @@ double g_pmult = 1.0;
 double g_w[], g_t[];             // หน้าต่างราคา / ที่เรียงลำดับ (ใช้ซ้ำ ไม่ต้องจองใหม่ทุกครั้ง)
 double g_su2 = 0.0, g_su4 = 0.0; // Σu², Σu⁴ ของ u = x − (n−1)/2 (ถดถอยโค้ง)
 int    g_warm  = 0;
+int    g_zp    = 20;             // ค่าที่ใช้จริงบน TF ของกราฟ: หน้าต่าง Z / Speed / แท่งสถิติ
+int    g_spd   = 4;
+int    g_stb   = 8;
 int    g_rates = 0;
 double g_hi[], g_lo[];           // สำเนา High / Low สำหรับจัดชั้นป้าย
 
@@ -155,7 +164,7 @@ long   g_ly_scale = -1, g_ly_first = -1, g_ly_width = -1, g_ly_h = -1;
 double g_ly_pmin = 0.0, g_ly_pmax = 0.0;
 
 // สถิติ
-int    g_st_next = 0;            // แท่งถัดไปที่จะนับ (ต้องมีครบ InpStatBars แท่งหลังจากนั้น)
+int    g_st_next = 0;            // แท่งถัดไปที่จะนับ (ต้องมีครบ g_stb แท่งหลังจากนั้น)
 int    g_st_bars = 0;
 int    g_st_n[ZN], g_st_touch[ZN];
 double g_st_adv[ZN];
@@ -173,7 +182,7 @@ double Median(double &a[], int n) {
 
 // Z ทั้ง 6 แบบของแท่ง i ที่ราคา P (แท่งปิด i−n+1 .. i−1 + P)
 bool ZAll(const double &close[], int i, double P, ZSet &s) {
-   int n = InpZ_Period, k = InpSpeedBars;
+   int n = g_zp, k = g_spd;
    if(i < n + k) return false;
    for(int q = 0; q < n - 1; q++) g_w[q] = close[i - n + 1 + q];
    g_w[n - 1] = P;
@@ -419,10 +428,10 @@ void StatsReset() {
    ArrayInitialize(g_st_adv, 0.0);
 }
 
-// แท่ง j (ปิดแล้ว + มีแท่งถัดไปครบ InpStatBars): Z ที่ High / Low เกินเกณฑ์ → กลับแตะเส้นไหม (รวมราคาปิดของแท่ง j เอง)
+// แท่ง j (ปิดแล้ว + มีแท่งถัดไปครบ g_stb): Z ที่ High / Low เกินเกณฑ์ → กลับแตะเส้นไหม (รวมราคาปิดของแท่ง j เอง)
 void StatBar(int j, const double &high[], const double &low[], const double &close[]) {
    double fmin = low[j + 1], fmax = high[j + 1];
-   for(int q = 2; q <= InpStatBars; q++) { fmin = MathMin(fmin, low[j + q]); fmax = MathMax(fmax, high[j + q]); }
+   for(int q = 2; q <= g_stb; q++) { fmin = MathMin(fmin, low[j + q]); fmax = MathMax(fmax, high[j + q]); }
    ZSet sh, sl;
    if(ZAll(close, j, high[j], sh))
       for(int t = 0; t < ZN; t++) {
@@ -466,8 +475,11 @@ void DrawStats() {
       StatLine(ZN - 1 - t, StringFormat("%s %-9s %7d ครั้ง | แตะเส้น %5.1f%% | ไปต่อสูงสุดเฉลี่ย %6.0f จุด",
                                          Z_TAG[t], Z_NAME[t], g_st_n[t], pct, adv));
    }
-   StatLine(ZN, StringFormat("📊 |Z| > %.2f ที่ High / Low → กลับแตะเส้นภายใน %d แท่ง (นับแล้ว %d แท่ง, V = กลับถึงราคาปิด %d แท่งก่อน)",
-                             InpStatZ, InpStatBars, g_st_bars, InpSpeedBars));
+   string tf  = EnumToString(_Period);
+   StringReplace(tf, "PERIOD_", "");
+   int    mins = PeriodSeconds(_Period) / 60;
+   StatLine(ZN, StringFormat("📊 %s | หน้าต่าง Z %d แท่ง | |Z| > %.2f ที่ High / Low → กลับแตะเส้นภายใน %d แท่ง (%d นาที) | นับแล้ว %d แท่ง | V = กลับถึงราคาปิด %d แท่งก่อน",
+                             tf, g_zp, InpStatZ, g_stb, g_stb * mins, g_st_bars, g_spd));
 }
 
 //====================================================================
@@ -487,13 +499,20 @@ int OnInit() {
       return(INIT_PARAMETERS_INCORRECT);
    }
    g_pmult = (_Digits == 2 || _Digits == 4) ? 0.1 : 1.0;
-   int n = InpZ_Period;
+   // ตั้งค่าอัตโนมัติ: จำนวนแท่งของ TF อ้างอิง × (วินาทีของ TF อ้างอิง ÷ วินาทีของ TF กราฟ)
+   double sc = InpAutoTF ? (double)PeriodSeconds(InpRefTF) / (double)MathMax(60, PeriodSeconds(_Period)) : 1.0;
+   g_spd = MathMax(1, (int)MathRound(InpSpeedBars * sc));
+   g_stb = MathMax(1, (int)MathRound(InpStatBars * sc));
+   g_zp  = (InpAutoTF && InpAutoZWindow) ? MathMax(5, (int)MathRound(InpZ_Period * sc)) : InpZ_Period;
+   PrintFormat("ℹ️ %s: หน้าต่าง Z %d แท่ง | Speed %d แท่ง | สถิติแตะเส้นภายใน %d แท่ง%s", EnumToString(_Period), g_zp, g_spd, g_stb,
+               (InpAutoTF ? " (แปลงอัตโนมัติจาก " + EnumToString(InpRefTF) + ")" : ""));
+   int n = g_zp;
    ArrayResize(g_w, n);
    ArrayResize(g_t, n);
    double uc = (n - 1.0) / 2.0;
    g_su2 = 0.0; g_su4 = 0.0;
    for(int q = 0; q < n; q++) { double u = q - uc; g_su2 += u * u; g_su4 += u * u * u * u; }
-   g_warm = MathMax(3 * n, n + InpSpeedBars + 2);
+   g_warm = MathMax(3 * n, n + g_spd + 2);
 
    SetIndexBuffer(0,  bQ,    INDICATOR_DATA);
    SetIndexBuffer(1,  bQp,   INDICATOR_DATA);
@@ -544,7 +563,7 @@ void OnDeinit(const int reason) {
 int OnCalculate(const int rates_total, const int prev_calculated,
                 const datetime &time[], const double &open[], const double &high[], const double &low[],
                 const double &close[], const long &tick_volume[], const long &volume[], const int &spread[]) {
-   if(rates_total < g_warm + InpStatBars + 5) return(0);
+   if(rates_total < g_warm + g_stb + 5) return(0);
    int start = (prev_calculated > 0) ? prev_calculated - 1 : 0;
    if(start == 0) { LabelsClear(); StatsReset(); }
 
@@ -554,7 +573,7 @@ int OnCalculate(const int rates_total, const int prev_calculated,
    ArrayCopy(g_hi, high, start, start, rates_total - start);
    ArrayCopy(g_lo, low,  start, start, rates_total - start);
 
-   double al = 2.0 / (InpZ_Period + 1.0);
+   double al = 2.0 / (g_zp + 1.0);
    for(int i = start; i < rates_total; i++) {
       // EMA + ความแปรปรวนแบบ exponential ของราคาปิด
       if(i == 0) { cEma[i] = close[i]; cEVar[i] = 0.0; }
@@ -591,10 +610,10 @@ int OnCalculate(const int rates_total, const int prev_calculated,
       LayoutLabels();
    }
 
-   // 📊 สถิติ: นับเฉพาะแท่งที่มีแท่งถัดไปปิดครบ InpStatBars แท่งแล้ว (แต่ละแท่งนับครั้งเดียว)
+   // 📊 สถิติ: นับเฉพาะแท่งที่มีแท่งถัดไปปิดครบ g_stb แท่งแล้ว (แต่ละแท่งนับครั้งเดียว)
    if(InpShowStats) {
       bool changed = (start == 0);
-      while(g_st_next + InpStatBars <= rates_total - 2) {
+      while(g_st_next + g_stb <= rates_total - 2) {
          StatBar(g_st_next, high, low, close);
          g_st_next++;
          changed = true;

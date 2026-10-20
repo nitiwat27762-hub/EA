@@ -6,7 +6,13 @@ indicator EA XAUUSD
 | ไฟล์ | เวอร์ชัน | รายละเอียด |
 |---|---|---|
 | `Indicators/Seven_Lines_Exhaustion_Ind.mq5` | 8.82 | 7-Lines Exhaustion + Z-Score (MQL5) |
-| `Indicators/Seven_Lines_Context_Ind.mq5` | 2.20 | Z หลายนิยาม (ถดถอย / SMA / ถดถอยโค้ง / Median / Speed / EMA) + ป้ายค่า Z + สถิติการดีดกลับ |
+| `Indicators/Seven_Lines_Context_Ind.mq5` | 2.30 | Z หลายนิยาม (ถดถอย / SMA / ถดถอยโค้ง / Median / Speed / EMA) + ป้ายค่า Z + สถิติการดีดกลับ |
+
+### Context Indicator v2.30
+- ตั้งค่าอัตโนมัติตาม TF ของกราฟ (`InpAutoTF`, TF อ้างอิง `InpRefTF` = M15): Speed / แท่งสถิติ ที่ตั้งไว้เป็นจำนวนแท่งของ M15
+  ถูกแปลงให้ได้ช่วงเวลาเท่ากันบน TF กราฟ (เช่น M30: Speed 2, สถิติ 4 แท่ง / M5: Speed 12, สถิติ 24 แท่ง)
+- `InpAutoZWindow` (ค่าเริ่มต้นปิด): แปลงหน้าต่าง Z ด้วย (เช่น M30 = 10 แท่ง, ขั้นต่ำ 5) — ปิด = 20 แท่งของ TF กราฟ
+- หัวตารางสถิติแสดง TF, หน้าต่าง Z และช่วงเวลาที่ใช้จริง
 
 ### Context Indicator v2.20
 - เส้นโยง (จุดไข่ปลา สีเดียวกับป้าย) จากปลายไส้ High / Low ของแท่งนั้นถึงป้าย — ขยับตามเมื่อจัดชั้นใหม่ (`InpShowLeader`)
