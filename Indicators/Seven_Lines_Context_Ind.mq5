@@ -1,34 +1,30 @@
 ﻿//+------------------------------------------------------------------+
 //|                                     Seven_Lines_Context_Ind.mq5  |
-//|        Z_reg / Z_SMA แบบเดียวกับ Counter EA + เกณฑ์ปรับตามตลาด      |
+//|     Z_reg / Z_SMA แบบเดียวกับ Counter EA + ตารางถอยจากยอด (no new Z)  |
 //+------------------------------------------------------------------+
 //
 // 📐 Z (สูตรเดียวกับ Counter EA, หน้าต่าง 20 แท่ง = แท่งปิด 19 แท่งก่อนหน้า + ราคาที่วัด)
 //  • Z_reg = (ราคา − เส้นถดถอย) ÷ max(SD ส่วนเหลือ, 0.5 × SD ของส่วนต่างต่อแท่ง)
 //  • Z_SMA = (ราคา − SMA20) ÷ SD20
-//  • โหมดตัวหาร σ (InpSigmaMode):
-//     CLOSE = SD จากราคาปิด (เหมือน EA)
-//     RANGE = σ จากช่วงแท่ง (Parkinson: √(Σ(High−Low)² ÷ (4·ln2·n)) ของ 19 แท่งก่อน) × ตัวปรับสเกล
-//             ตัวปรับสเกล = ค่าเฉลี่ยถ่วง (EMA) ของ σ_ราคาปิด ÷ σ_ช่วงแท่ง ย้อนหลัง → ค่าเฉลี่ยระยะยาวเท่า CLOSE
-//             แต่ช่วงที่ไส้ยาวขึ้น (ราคาปิดไม่ค่อยหนี) ตัวหารโตตาม → Z ไม่พองเกินจริง
-//
-// 🎚️ เกณฑ์ (InpThrMode)
-//  • FIXED = T2 / T3 / T4 = 2.5 / 3.0 / 3.5 (เหมือน EA)
-//  • PCT   = เกณฑ์ปรับตามตลาด: ค่า Z ที่ top 1% / 0.3% / 0.1% ของแท่งย้อนหลัง 20 วัน (ไม่รวมแท่งปัจจุบัน)
-//            วัดจาก Z สุดขั้วของแต่ละแท่ง = max(Z_reg, Z_SMA ที่ High, −Z_reg, −Z_SMA ที่ Low)
 //
 // 🖼️ แสดงผลแบบเดียวกับ Counter EA
 //  • ป้าย "R+2.31 | S+2.05" บนแท่งที่ Z ที่ High (SELL) / Low (BUY) เกินเกณฑ์ T2 (สี = เข้าระดับ, เทา = ไม่ครบ)
 //  • ป้าย Z_float "F+1.23" = (ราคาเปิด − SMA ตอนเปิดแท่ง) ÷ SD (แท่งปัจจุบันแสดงเสมอ)
 //  • เส้นแนวนอนระดับ Z (เส้นถดถอย / SMA20 ± เกณฑ์ T2) + ป้าย Z สดที่ขอบขวา
-// 📅 ตารางอัตราการเกิดรายเดือน (มุมขวาล่าง): % ของแท่งที่ Z เกิน 2.0 / 2.5 / 3.0 + ค่า Z ที่ top 1% / 0.3% / 0.1%
-//    ใช้ดูว่าความถี่ของ Z สุดโต่งเพิ่มขึ้นตามปีจริงไหม และโหมด RANGE / PCT ช่วยให้คงที่ได้ไหม
+//
+// 📊 ตารางถอยจากยอด (มุมขวาล่าง, ปุ่มเลือกระดับ Z) — ใช้หาเกณฑ์ "no new Z" แบบระยะ แทน/เสริมแบบนับเวลา
+//  • เส้นทางราคาในแท่ง = แท่ง M1 (แท่งเขียว: Low ก่อน High, แท่งแดง: High ก่อน Low)
+//  • เหตุการณ์ = ในแท่งของกราฟ Z ตัวใดตัวหนึ่งที่ High ของแท่ง M1 (SELL) / Low (BUY) เกินระดับ → ติดตามยอด = High สูงสุดของแท่ง
+//  • ตาราง 1: ราคาถอยจากยอด ≥ ΔZ (σ = SD20 ตอนแตะยอด) ครั้งแรก → เข้าที่ ยอด − ΔZ·σ
+//    ตาราง 2: ไม่มียอดใหม่ครบ N นาที → เข้าที่ราคาปิดของแท่ง M1 นั้น
+//  • ผล (อะไรเกิดก่อน ภายใน InpStudyMin นาทีหลังยอด): พุ่งต่อ = ทะลุยอด + 500 จุด (SL ของ EA) / สวน = ถอยถึง ยอด − 2σ / ไม่ชัด
+//    ยอดใหม่ = ราคาทะลุยอดเดิม (เท่าไรก็ได้) ก่อนสวน, EV = กำไรเฉลี่ยต่อไม้ (จุด) ถ้าเข้าตามแถวนั้น
 //
 #property copyright   "Commander's Quant System"
-#property version     "3.00"
-#property description "Z_reg / Z_SMA แบบเดียวกับ Counter EA + เกณฑ์ปรับตามตลาด (เปอร์เซ็นไทล์) + σ จากช่วงแท่ง + อัตราการเกิดรายเดือน"
+#property version     "3.10"
+#property description "Z_reg / Z_SMA แบบเดียวกับ Counter EA + ตารางถอยจากยอด: ถอยแค่ไหนคือสวนกลับ / พุ่งต่อ"
 #property indicator_chart_window
-#property indicator_buffers 11
+#property indicator_buffers 6
 #property indicator_plots   6
 
 #property indicator_label1  "R เส้นถดถอย"
@@ -50,35 +46,32 @@
 #property indicator_type6   DRAW_LINE
 #property indicator_style6  STYLE_DASHDOT
 
-enum ENUM_SIGMA_MODE {
-   SIG_CLOSE = 0,   // SD จากราคาปิด (เหมือน EA)
-   SIG_RANGE = 1    // σ จากช่วงแท่ง High-Low (ปรับสเกลให้เฉลี่ยเท่าราคาปิด)
-};
-
-enum ENUM_THR_MODE {
-   THR_FIXED = 0,   // เกณฑ์คงที่ (เหมือน EA)
-   THR_PCT   = 1    // เกณฑ์ปรับตามตลาด (เปอร์เซ็นไทล์ย้อนหลัง)
-};
-
 //====================================================================
 // 🎛️ INPUT PARAMETERS
 //====================================================================
 input group "=== Z (สูตรเดียวกับ Counter EA) ==="
 input int             InpZ_Period          = 20;          // จำนวนแท่งของหน้าต่าง
 input double          InpSigmaFloorMult    = 0.50;        // พื้นตัวหาร Z_reg = ค่านี้ × SD ของส่วนต่างต่อแท่ง
-input ENUM_SIGMA_MODE InpSigmaMode         = SIG_CLOSE;   // ตัวหาร σ
 
-input group "=== เกณฑ์ ==="
-input ENUM_THR_MODE   InpThrMode           = THR_FIXED;   // เกณฑ์คงที่ / ปรับตามตลาด
-input double          InpT2_Z              = 2.50;        // FIXED: T2 (ป้ายเริ่มแสดง, ต้องเกินทั้งคู่ถึงมีสี)
-input double          InpT3_Z              = 3.00;        // FIXED: T3 (ตัวใดตัวหนึ่ง)
-input double          InpT4_Z              = 3.50;        // FIXED: T4 (ตัวใดตัวหนึ่ง)
-input double          InpFloatMin          = 1.80;        // T2 ต้องมี Z_float > ค่านี้ (เหมือน EA, T3/T4 ไม่ต้อง)
-input double          InpT2EitherFloat     = 2.00;        // Z_float > ค่านี้ → T2 เกินตัวเดียวก็พอ (เหมือน EA)
-input double          InpPctT2             = 1.0;         // PCT: T2 = Z ที่ top กี่ % ของแท่งย้อนหลัง
-input double          InpPctT3             = 0.3;         // PCT: T3 = top กี่ %
-input double          InpPctT4             = 0.1;         // PCT: T4 = top กี่ %
-input int             InpPctDays           = 20;          // PCT: ย้อนหลังกี่วัน (นับเป็นวัน 24 ชม. ของ TF กราฟ)
+input group "=== เกณฑ์ (เหมือน Counter EA) ==="
+input double          InpT2_Z              = 2.50;        // T2 (ป้ายเริ่มแสดง, ต้องเกินทั้งคู่ถึงมีสี)
+input double          InpT3_Z              = 3.00;        // T3 (ตัวใดตัวหนึ่ง)
+input double          InpT4_Z              = 3.50;        // T4 (ตัวใดตัวหนึ่ง)
+input double          InpFloatMin          = 1.80;        // T2 ต้องมี Z_float > ค่านี้ (T3/T4 ไม่ต้อง)
+input double          InpT2EitherFloat     = 2.00;        // Z_float > ค่านี้ → T2 เกินตัวเดียวก็พอ
+
+input group "=== ตารางถอยจากยอด (no new Z) ==="
+input bool            InpShowStudy         = true;        // แสดงตาราง (มุมขวาล่าง)
+input int             InpStudyDays         = 180;         // ย้อนหลังกี่วัน (ใช้ข้อมูล M1)
+input double          InpStudyZ1           = 2.50;        // ระดับ Z ปุ่มที่ 1 (ตัวใดตัวหนึ่ง)
+input double          InpStudyZ2           = 3.00;        // ระดับ Z ปุ่มที่ 2 (ค่าเริ่มต้น)
+input double          InpStudyZ3           = 3.50;        // ระดับ Z ปุ่มที่ 3
+input double          InpStudySL_Pts       = 500.0;       // พุ่งต่อ = ทะลุยอด + ระยะนี้ (จุด, = SL ของ EA)
+input double          InpStudyTarget       = 2.0;         // สวน = ถอยจากยอดถึงกี่ σ
+input int             InpStudyMin          = 60;          // รอผลกี่นาทีหลังยอด
+input int             InpStudySkipFirstMin = 1;           // ไม่นับกี่นาทีแรกของแท่ง (เหมือน EA)
+input int             InpStudySkipLastMin  = 2;           // ไม่นับกี่นาทีท้ายแท่ง (เหมือน EA)
+input int             InpStudyMinN         = 30;          // แถวต้องมีอย่างน้อยกี่ไม้ถึงนับเป็นแถว EV ดีสุด
 
 input group "=== แสดงผล (แบบเดียวกับ Counter EA) ==="
 input bool            InpShowBarZ          = true;        // ป้าย Z บนแท่งที่ Z เกินเกณฑ์ T2
@@ -92,8 +85,6 @@ input bool            InpShowLiveZ         = true;        // ป้าย Z ส�
 input int             InpLiveZFontSize     = 11;          // ขนาดตัวอักษรป้าย Z สด
 input int             InpLiveZOffsetPx     = 10;          // ระยะป้าย Z สดจากขอบขวา (พิกเซล)
 input bool            InpShowHistLines     = false;       // เส้นย้อนหลัง: เส้นถดถอย / SMA20 ± เกณฑ์ T2 ทุกแท่ง
-input bool            InpShowMonthTable    = true;        // ตารางอัตราการเกิดรายเดือน (มุมขวาล่าง)
-input int             InpMonthRows         = 12;          // แสดงกี่เดือนล่าสุด
 
 input group "=== สี (เหมือน Counter EA) ==="
 input color           InpClrZCenter        = clrGold;           // เส้นกลาง Regression
@@ -110,37 +101,27 @@ input color           InpClrLiveSell       = clrOrangeRed;      // ป้าย 
 input color           InpClrLiveBuy        = clrDeepSkyBlue;    // ป้าย Z สด: ถึงเกณฑ์ BUY
 input color           InpClrLiveNear       = clrGold;           // ป้าย Z สด: ใกล้เกณฑ์
 input color           InpClrLiveNormal     = clrSilver;         // ป้าย Z สด: ปกติ
-input color           InpClrTable          = clrSilver;         // ตารางรายเดือน
+input color           InpClrTable          = clrSilver;         // ตาราง
+input color           InpClrTableBest      = clrLimeGreen;      // ตาราง: แถวที่ EV ดีสุด
 
 //====================================================================
 // 🔒 INTERNAL
 //====================================================================
 const string PFX       = "7LCTX_";
+const string BTN_PFX   = "7LCTX_BTN_";
+const string GV_LVL    = "7LCTX_STUDY_LVL";
 const double NEAR_ZONE = 0.5;
-#define NB   801          // ช่องฮิสโตแกรมของ Z สุดขั้ว: 0.00 - 8.00 ทีละ 0.01
-#define BINW 0.01
+#define N_LVL 3
+#define N_DEP 7
+#define N_TIM 4
+#define RES_SL 1
+#define RES_RV 2
+#define RES_UN 3
 
 double bR[], bRp[], bRm[], bS[], bSp[], bSm[];
-double cThr2[], cThr3[], cThr4[];   // เกณฑ์ PCT ของแต่ละแท่ง (จากแท่งที่ปิดก่อนหน้า)
-double cKr[], cKs[];                // ตัวปรับสเกลโหมด RANGE (σ_ราคาปิด ÷ σ_ช่วงแท่ง, EMA)
 
 double   g_pmult = 1.0;
 int      g_warm  = 0;
-int      g_win   = 0;               // จำนวนแท่งของหน้าต่าง PCT
-double   g_alpha = 0.0;             // EMA ของตัวปรับสเกล
-
-// หน้าต่างเลื่อนของ Z สุดขั้ว (PCT)
-int      g_hist[NB];
-int      g_ring[];
-int      g_ring_n = 0, g_ring_pos = 0;
-int      g_next_push = 0;           // แท่งปิดถัดไปที่ยังไม่ได้นับ (หน้าต่าง + ตารางรายเดือน)
-double   g_q2 = 0.0, g_q3 = 0.0, g_q4 = 0.0;   // เกณฑ์ PCT ล่าสุดของหน้าต่าง
-
-// ตารางรายเดือน
-int      g_m_key[];                 // ปี × 12 + เดือน
-int      g_m_n[], g_m_c20[], g_m_c25[], g_m_c30[], g_m_b25[];
-int      g_m_hist[];                // ฮิสโตแกรมของแต่ละเดือน (เดือน × NB)
-bool     g_table_dirty = true;
 
 // ป้าย Z สด
 string   g_live_text = "";
@@ -148,13 +129,37 @@ color    g_live_clr  = clrSilver;
 double   g_live_bid  = 0.0;
 string   g_live_tip  = "";
 
+// ตารางถอยจากยอด
+struct StudyStat {
+   int    n;       // จำนวนไม้ที่ได้ผล
+   int    nh;      // ทำยอดใหม่ก่อนสวน
+   int    sl;      // พุ่งต่อ (ทะลุยอด + SL)
+   int    rv;      // สวนถึงเป้า
+   int    un;      // ไม่ชัด (ครบเวลา)
+   double dist;    // ผลรวมระยะถอย (ตาราง 1: จุด, ตาราง 2: ΔZ)
+   double ev;      // ผลรวมกำไร (จุด)
+};
+StudyStat g_sd[N_LVL][N_DEP];
+StudyStat g_st[N_LVL][N_TIM];
+int       g_ev_n[N_LVL];
+double    g_lvl[N_LVL];
+double    g_dep_k[N_DEP] = {0.10, 0.20, 0.30, 0.50, 0.75, 1.00, 1.50};
+int       g_tim_m[N_TIM] = {1, 2, 3, 5};
+int       g_sel        = 1;          // ระดับที่แสดง (ปุ่ม)
+MqlRates  g_m1[];
+int       g_m1_n       = 0;
+datetime  g_m1_from    = 0, g_m1_to = 0;
+datetime  g_study_bar  = 0;          // แท่งของกราฟตอนคำนวณตารางล่าสุด
+uint      g_study_retry = 0;
+string    g_study_msg  = "";
+
 //====================================================================
 // 🧰 HELPERS
 //====================================================================
 double PtsToPrice(double pts) { return pts * g_pmult * _Point; }
 double PriceToPts(double px)  { return px / (g_pmult * _Point); }
 
-// Z แบบ EA (ตัวหารจากราคาปิด): ราคาปิด c[i−n+1 .. i−1] + ราคา P
+// Z แบบ EA: ราคาปิด c[i−n+1 .. i−1] + ราคา P
 bool ZCore(const double &c[], int i, double P, double &fit, double &sig_r, double &mean, double &sd_s) {
    int n = InpZ_Period;
    if(i - n + 1 < 1) return false;
@@ -190,122 +195,21 @@ bool ZCore(const double &c[], int i, double P, double &fit, double &sig_r, doubl
    return (sig_r > 0.0);
 }
 
-// σ จากช่วงแท่ง (Parkinson, หน่วยราคา) ของแท่งปิด n−1 แท่งก่อนแท่ง i
-double RangeSigma(const double &h[], const double &l[], int i) {
-   int    n = InpZ_Period;
-   double s = 0.0;
-   for(int k = i - n + 1; k <= i - 1; k++) { double r = h[k] - l[k]; s += r * r; }
-   return MathSqrt(s / (4.0 * MathLog(2.0) * (n - 1)));
-}
-
-// Z ตามโหมดตัวหาร: คืนค่า Z_reg / Z_SMA + เส้นกลาง / ตัวหารที่ใช้จริง
-bool ZAt(const double &c[], const double &h[], const double &l[], int i, double P,
-         double &zr, double &zs, double &fit, double &sr, double &mean, double &ss) {
-   double sig_r, sd_s;
-   if(!ZCore(c, i, P, fit, sig_r, mean, sd_s)) return false;
-   sr = sig_r; ss = sd_s;
-   if(InpSigmaMode == SIG_RANGE && i >= 1 && cKr[i - 1] > 0.0 && cKs[i - 1] > 0.0) {
-      double sp = RangeSigma(h, l, i);
-      if(sp > 0.0) { sr = cKr[i - 1] * sp; ss = cKs[i - 1] * sp; }
-   }
+bool ZAt(const double &c[], int i, double P, double &zr, double &zs, double &fit, double &sr, double &mean, double &ss) {
+   if(!ZCore(c, i, P, fit, sr, mean, ss)) return false;
    zr = (P - fit) / sr;
    zs = (P - mean) / ss;
    return true;
-}
-
-int BinOf(double z) {
-   int b = (int)MathFloor(MathMax(0.0, z) / BINW);
-   return MathMin(b, NB - 1);
-}
-
-// ค่า Z ที่ top InpPctT2 / T3 / T4 % ของฮิสโตแกรม (ไล่จากช่องบนสุดลงมารอบเดียว)
-void Quantiles3(const int &hist[], int base, int total, double &q2, double &q3, double &q4) {
-   q2 = 0.0; q3 = 0.0; q4 = 0.0;
-   if(total <= 0) return;
-   int n2 = (int)MathMax(1.0, MathCeil(total * InpPctT2 / 100.0));
-   int n3 = (int)MathMax(1.0, MathCeil(total * InpPctT3 / 100.0));
-   int n4 = (int)MathMax(1.0, MathCeil(total * InpPctT4 / 100.0));
-   int acc = 0;
-   for(int b = NB - 1; b >= 0; b--) {
-      acc += hist[base + b];
-      if(q4 == 0.0 && acc >= n4) q4 = b * BINW;
-      if(q3 == 0.0 && acc >= n3) q3 = b * BINW;
-      if(acc >= n2) { q2 = b * BINW; return; }
-   }
-}
-
-// % ของหน้าต่าง PCT ที่ Z สุดขั้ว > z
-double PctAbove(double z) {
-   if(g_ring_n <= 0) return 0.0;
-   int cnt = 0;
-   for(int b = BinOf(z) + 1; b < NB; b++) cnt += g_hist[b];
-   return 100.0 * cnt / g_ring_n;
-}
-
-void WindowPush(double e) {
-   int b = BinOf(e);
-   if(g_ring_n < g_win) { g_ring[g_ring_n] = b; g_ring_n++; g_hist[b]++; }
-   else {
-      g_hist[g_ring[g_ring_pos]]--;
-      g_ring[g_ring_pos] = b;
-      g_hist[b]++;
-      g_ring_pos = (g_ring_pos + 1) % g_win;
-   }
-   Quantiles3(g_hist, 0, g_ring_n, g_q2, g_q3, g_q4);
-}
-
-void MonthAdd(datetime t, double e, double eb) {
-   MqlDateTime d;
-   TimeToStruct(t, d);
-   int key = d.year * 12 + (d.mon - 1);
-   int m   = ArraySize(g_m_key) - 1;
-   if(m < 0 || g_m_key[m] != key) {
-      m++;
-      ArrayResize(g_m_key, m + 1); ArrayResize(g_m_n, m + 1); ArrayResize(g_m_c20, m + 1);
-      ArrayResize(g_m_c25, m + 1); ArrayResize(g_m_c30, m + 1); ArrayResize(g_m_b25, m + 1);
-      ArrayResize(g_m_hist, (m + 1) * NB);
-      g_m_key[m] = key; g_m_n[m] = 0; g_m_c20[m] = 0; g_m_c25[m] = 0; g_m_c30[m] = 0; g_m_b25[m] = 0;
-      for(int b = 0; b < NB; b++) g_m_hist[m * NB + b] = 0;
-   }
-   g_m_n[m]++;
-   if(e > 2.0)  g_m_c20[m]++;
-   if(e > 2.5)  g_m_c25[m]++;
-   if(e > 3.0)  g_m_c30[m]++;
-   if(eb > 2.5) g_m_b25[m]++;
-   g_m_hist[m * NB + BinOf(e)]++;
-   g_table_dirty = true;
-}
-
-void ResetStats() {
-   ArrayInitialize(g_hist, 0);
-   ArrayResize(g_ring, g_win);
-   g_ring_n = 0; g_ring_pos = 0;
-   g_next_push = 0;
-   g_q2 = 0.0; g_q3 = 0.0; g_q4 = 0.0;
-   ArrayResize(g_m_key, 0); ArrayResize(g_m_n, 0); ArrayResize(g_m_c20, 0); ArrayResize(g_m_c25, 0);
-   ArrayResize(g_m_c30, 0); ArrayResize(g_m_b25, 0); ArrayResize(g_m_hist, 0);
-   g_table_dirty = true;
-}
-
-// เกณฑ์ T2 / T3 / T4 ของแท่ง i ตามโหมด
-void Thresholds(int i, double &t2, double &t3, double &t4) {
-   if(InpThrMode == THR_PCT && cThr2[i] > 0.0) { t2 = cThr2[i]; t3 = MathMax(cThr3[i], t2); t4 = MathMax(cThr4[i], t3); return; }
-   t2 = InpT2_Z; t3 = InpT3_Z; t4 = InpT4_Z;
-}
-
-string ModeText() {
-   return (InpSigmaMode == SIG_RANGE ? "σ ช่วงแท่ง" : "σ ราคาปิด") + " | " + (InpThrMode == THR_PCT ? "เกณฑ์ปรับตามตลาด" : "เกณฑ์คงที่");
 }
 
 //====================================================================
 // 🏷️ ป้ายบนแท่ง (แบบเดียวกับ Counter EA)
 //====================================================================
 // Z_float ของแท่ง i (บวก = ราคาเปิดเหนือ SMA ตอนเปิดแท่ง)
-bool FloatZ(int i, const double &open[], const double &high[], const double &low[], const double &close[],
-            double &fz, double &mean, double &ss) {
+bool FloatZ(int i, const double &open[], const double &close[], double &fz, double &mean, double &ss) {
    double zr, zs, fit, sr;
    fz = 0.0;
-   if(!ZAt(close, high, low, i, open[i], zr, zs, fit, sr, mean, ss)) return false;
+   if(!ZAt(close, i, open[i], zr, zs, fit, sr, mean, ss)) return false;
    fz = (open[i] - mean) / ss;
    return true;
 }
@@ -313,14 +217,13 @@ bool FloatZ(int i, const double &open[], const double &high[], const double &low
 void BarZLabels(int i, const datetime &time[], const double &open[], const double &high[], const double &low[], const double &close[]) {
    double off = PtsToPrice(InpBarZOffset_Pts);
    string ts  = IntegerToString((long)time[i]);
-   double t2, t3, t4, fz, fmean, fss;
-   Thresholds(i, t2, t3, t4);
-   FloatZ(i, open, high, low, close, fz, fmean, fss);
+   double t2 = InpT2_Z, t3 = InpT3_Z, t4 = InpT4_Z, fz, fmean, fss;
+   FloatZ(i, open, close, fz, fmean, fss);
    for(int side = 0; side < 2; side++) {
       string name = PFX + (side == 0 ? "ZL_S_" : "ZL_B_") + ts;
       double P    = (side == 0) ? high[i] : low[i];
       double zr, zs, fit, sr, mean, ss;
-      bool   ok   = ZAt(close, high, low, i, P, zr, zs, fit, sr, mean, ss);
+      bool   ok   = ZAt(close, i, P, zr, zs, fit, sr, mean, ss);
       double a_r  = (side == 0) ? zr : -zr, a_s = (side == 0) ? zs : -zs;
       bool   hit_r = ok && a_r > t2, hit_s = ok && a_s > t2;
       if(!InpShowBarZ || !(hit_r || hit_s)) { if(ObjectFind(0, name) >= 0) ObjectDelete(0, name); continue; }
@@ -344,10 +247,10 @@ void BarZLabels(int i, const datetime &time[], const double &open[], const doubl
       ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
       ObjectSetString(0,  name, OBJPROP_TEXT, StringFormat("R%+.2f | S%+.2f", zr, zs));
       ObjectSetString(0,  name, OBJPROP_TOOLTIP,
-                      StringFormat("%s | ที่ %s: Z_reg %+.2f%s / Z_SMA %+.2f%s | Z_float %+.2f | %s | เกณฑ์ T2 %.2f / T3 %.2f / T4 %.2f (%s)",
+                      StringFormat("%s | ที่ %s: Z_reg %+.2f%s / Z_SMA %+.2f%s | Z_float %+.2f | %s",
                                    TimeToString(time[i], TIME_DATE|TIME_MINUTES), (side == 0 ? "High" : "Low"),
                                    zr, (hit_r ? " ✓" : ""), zs, (hit_s ? " ✓" : ""), zf,
-                                   (tier > 0 ? "ถึงระดับ T" + IntegerToString(tier) : "ถึงเกณฑ์ไม่ครบ"), t2, t3, t4, ModeText()));
+                                   (tier > 0 ? "ถึงระดับ T" + IntegerToString(tier) : "ถึงเกณฑ์ไม่ครบ")));
    }
 }
 
@@ -356,7 +259,7 @@ void FloatLabel(int i, bool live, const datetime &time[], const double &open[], 
    double off = PtsToPrice(InpBarZOffset_Pts);
    string ts  = IntegerToString((long)time[i]);
    double fz, mean, ss;
-   bool   ok  = FloatZ(i, open, high, low, close, fz, mean, ss);
+   bool   ok  = FloatZ(i, open, close, fz, mean, ss);
    for(int side = 0; side < 2; side++) {
       string name = PFX + (side == 0 ? "FL_S_" : "FL_B_") + ts;
       double zf   = (side == 0) ? fz : -fz;
@@ -375,14 +278,14 @@ void FloatLabel(int i, bool live, const datetime &time[], const double &open[], 
       ObjectSetInteger(0, name, OBJPROP_COLOR, hit ? InpClrFloatMark : InpClrBarZOther);
       ObjectSetString(0,  name, OBJPROP_TEXT, StringFormat("F%+.2f", zf));
       ObjectSetString(0,  name, OBJPROP_TOOLTIP,
-                      StringFormat("%s | ราคาเปิดลอยพ้น SMA (%s): Z_float %+.2f = (Open %s − SMA ตอนเปิดแท่ง %s) ÷ σ %.0f จุด (%s)",
+                      StringFormat("%s | ราคาเปิดลอยพ้น SMA (%s): Z_float %+.2f = (Open %s − SMA ตอนเปิดแท่ง %s) ÷ SD %.0f จุด",
                                    TimeToString(time[i], TIME_DATE|TIME_MINUTES), (side == 0 ? "ฝั่ง SELL" : "ฝั่ง BUY"), zf,
-                                   DoubleToString(open[i], _Digits), DoubleToString(mean, _Digits), PriceToPts(ss), ModeText()));
+                                   DoubleToString(open[i], _Digits), DoubleToString(mean, _Digits), PriceToPts(ss)));
    }
 }
 
 //====================================================================
-// 📏 เส้นระดับ / ป้าย Z สด / ตารางรายเดือน
+// 📏 เส้นระดับ / ป้าย Z สด
 //====================================================================
 void HLine(string name, double price, color clr, ENUM_LINE_STYLE style, string tip) {
    string nm = PFX + name;
@@ -422,8 +325,160 @@ void DrawLiveZ() {
    ObjectSetString(0,  nm, OBJPROP_TOOLTIP, g_live_tip);
 }
 
-void TableLine(int row, string text) {
-   string nm = PFX + "MT_" + IntegerToString(row);
+//====================================================================
+// 📊 ตารางถอยจากยอด (no new Z)
+//   ทุกฝั่งคิดแบบ SELL: ฝั่ง BUY กลับเครื่องหมายราคา (s = −1) → High ของ BUY = −Low
+//====================================================================
+double M1Hi(int m, int s) { return (s > 0) ? g_m1[m].high : -g_m1[m].low; }
+double M1Lo(int m, int s) { return (s > 0) ? g_m1[m].low  : -g_m1[m].high; }
+double M1Op(int m, int s) { return s * g_m1[m].open; }
+double M1Cl(int m, int s) { return s * g_m1[m].close; }
+
+// Z ตัวใหญ่สุด (ในทิศของฝั่ง) ที่ราคา pT (ราคาที่กลับเครื่องหมายแล้ว) + SD20 ที่ราคานั้น
+double ZSide(const double &c[], int i, double pT, int s, double &sig) {
+   double fit, sr, mean, ss;
+   sig = 0.0;
+   double P = s * pT;
+   if(!ZCore(c, i, P, fit, sr, mean, ss)) return -1.0e9;
+   sig = ss;
+   return MathMax(s * (P - fit) / sr, s * (P - mean) / ss);
+}
+
+void StatClear(StudyStat &x) { x.n = 0; x.nh = 0; x.sl = 0; x.rv = 0; x.un = 0; x.dist = 0.0; x.ev = 0.0; }
+
+void StatAdd(StudyStat &x, int res, bool nh, double pnl, double dist) {
+   x.n++;
+   if(nh) x.nh++;
+   if(res == RES_SL)      x.sl++;
+   else if(res == RES_RV) x.rv++;
+   else                   x.un++;
+   x.dist += dist;
+   x.ev   += PriceToPts(pnl);
+}
+
+// ผลของไม้สมมติ (เข้าที่ entryT หลังแท่ง M1 ที่ m0): อะไรเกิดก่อน — ทะลุยอด + SL / ถอยถึงเป้า / ครบเวลา
+//   lo_same = ราคาที่ทำให้เกิดไม้ (เช็คเป้าก่อน), hi_same = แท่ง M1 นี้ Low มาก่อน High → High ของแท่งเดียวกันเกิดหลังจุดเข้า
+//   คืน false = ข้อมูลยังไม่พอ (ไม้ล่าสุดที่ยังไม่จบ) → ไม่นับ
+bool Resolve(int s, int m0, double lo_same, bool hi_same, double peakT, double sig, double entryT, datetime t_peak,
+             int &res, bool &nh, double &pnl) {
+   double   slT   = peakT + PtsToPrice(InpStudySL_Pts);
+   double   tgT   = peakT - InpStudyTarget * sig;
+   datetime t_end = t_peak + (datetime)InpStudyMin * 60;
+   nh = false;
+   if(lo_same <= tgT) { res = RES_RV; pnl = entryT - tgT; return true; }
+   if(hi_same) {
+      double h0 = M1Hi(m0, s);
+      if(h0 > peakT) nh = true;
+      if(h0 >= slT) { res = RES_SL; pnl = entryT - slT; return true; }
+   }
+   for(int m = m0 + 1; m < g_m1_n; m++) {
+      if(g_m1[m].time >= t_end) { res = RES_UN; pnl = entryT - M1Cl(m - 1, s); return true; }
+      double hi = M1Hi(m, s), lo = M1Lo(m, s);
+      bool   hf = M1Op(m, s) > M1Cl(m, s);      // แท่งแดง (ในทิศของฝั่ง) = High มาก่อน Low
+      if(hf) {
+         if(hi > peakT) nh = true;
+         if(hi >= slT) { res = RES_SL; pnl = entryT - slT; return true; }
+         if(lo <= tgT) { res = RES_RV; pnl = entryT - tgT; return true; }
+      } else {
+         if(lo <= tgT) { res = RES_RV; pnl = entryT - tgT; return true; }
+         if(hi > peakT) nh = true;
+         if(hi >= slT) { res = RES_SL; pnl = entryT - slT; return true; }
+      }
+   }
+   return false;
+}
+
+// เหตุการณ์ของแท่งกราฟ i ฝั่ง s ระดับ l: แท่ง M1 [ma, mb)
+void StudyBar(const double &c[], int i, datetime t0, int ma, int mb, int s, int l) {
+   int      mins   = PeriodSeconds(_Period) / 60;
+   bool     active = false;
+   double   peak   = -DBL_MAX, sig = 0.0;
+   datetime tpk    = 0;
+   bool     dd[N_DEP], dt[N_TIM];
+   for(int b = 0; b < N_DEP; b++) dd[b] = false;
+   for(int t = 0; t < N_TIM; t++) dt[t] = false;
+
+   for(int m = ma; m < mb; m++) {
+      int  off     = (int)((g_m1[m].time - t0) / 60);
+      bool allowed = (off >= InpStudySkipFirstMin && off < mins - InpStudySkipLastMin);
+      bool hf      = M1Op(m, s) > M1Cl(m, s);
+      for(int q = 0; q < 2; q++) {
+         bool   is_hi = ((q == 0) == hf);
+         double p     = is_hi ? M1Hi(m, s) : M1Lo(m, s);
+         if(is_hi) {
+            if(p > peak) { peak = p; tpk = g_m1[m].time; if(active) ZSide(c, i, peak, s, sig); }
+            if(!active && allowed) {
+               double sg;
+               if(ZSide(c, i, p, s, sg) > g_lvl[l]) { active = true; g_ev_n[l]++; ZSide(c, i, peak, s, sig); }
+            }
+            continue;
+         }
+         if(!active || !allowed || sig <= 0.0) continue;
+         double ret = peak - p;
+         for(int b = 0; b < N_DEP; b++) {
+            if(dd[b] || g_dep_k[b] >= InpStudyTarget || ret < g_dep_k[b] * sig) continue;
+            dd[b] = true;
+            double entry = peak - g_dep_k[b] * sig, pnl;
+            int    res;
+            bool   nh;
+            if(Resolve(s, m, p, !hf, peak, sig, entry, tpk, res, nh, pnl))
+               StatAdd(g_sd[l][b], res, nh, pnl, PriceToPts(g_dep_k[b] * sig));
+         }
+      }
+      if(!active || !allowed || sig <= 0.0) continue;
+      for(int t = 0; t < N_TIM; t++) {
+         if(dt[t] || g_m1[m].time - tpk < (datetime)g_tim_m[t] * 60) continue;
+         dt[t] = true;
+         double entry = M1Cl(m, s), pnl;
+         if(entry <= peak - InpStudyTarget * sig) continue;    // สวนถึงเป้าไปแล้ว
+         int    res;
+         bool   nh;
+         if(Resolve(s, m, DBL_MAX, false, peak, sig, entry, tpk, res, nh, pnl))
+            StatAdd(g_st[l][t], res, nh, pnl, (peak - entry) / sig);
+      }
+   }
+}
+
+// คำนวณตารางใหม่ทั้งหมด (เรียกเมื่อขึ้นแท่งใหม่ของกราฟ) — คืน false = ข้อมูล M1 ยังไม่พร้อม ลองใหม่ภายหลัง
+bool RunStudy(const double &c[], const datetime &time[], int rates_total) {
+   for(int l = 0; l < N_LVL; l++) {
+      g_ev_n[l] = 0;
+      for(int b = 0; b < N_DEP; b++) StatClear(g_sd[l][b]);
+      for(int t = 0; t < N_TIM; t++) StatClear(g_st[l][t]);
+   }
+   long per = PeriodSeconds(_Period);
+   if(per <= 60) { g_study_msg = "ตารางถอยจากยอดต้องใช้กราฟ TF ใหญ่กว่า M1"; return true; }
+   datetime t_to   = time[rates_total - 1] + (datetime)per;
+   datetime t_from = t_to - (datetime)InpStudyDays * 86400;
+   g_m1_n = CopyRates(_Symbol, PERIOD_M1, t_from, t_to, g_m1);
+   if(g_m1_n <= 0) { g_m1_n = 0; g_study_msg = "กำลังโหลดข้อมูล M1 ..."; return false; }
+   g_m1_from = g_m1[0].time;
+   g_m1_to   = g_m1[g_m1_n - 1].time;
+
+   double zmin = MathMin(g_lvl[0], MathMin(g_lvl[1], g_lvl[2]));
+   int    mp   = 0;
+   for(int i = g_warm; i < rates_total - 1; i++) {      // เฉพาะแท่งที่ปิดแล้ว
+      datetime t0 = time[i], t1 = t0 + (datetime)per;
+      if(t0 < g_m1_from) continue;
+      while(mp < g_m1_n && g_m1[mp].time < t0) mp++;
+      int mb = mp;
+      while(mb < g_m1_n && g_m1[mb].time < t1) mb++;
+      for(int s = 1; s >= -1; s -= 2) {
+         double mx = -DBL_MAX, sg;
+         for(int m = mp; m < mb; m++) mx = MathMax(mx, M1Hi(m, s));
+         if(mb <= mp || ZSide(c, i, mx, s, sg) <= zmin) continue;   // ทั้งแท่งไม่ถึงระดับต่ำสุด → ข้าม
+         for(int l = 0; l < N_LVL; l++) StudyBar(c, i, t0, mp, mb, s, l);
+      }
+      mp = mb;
+   }
+   ArrayFree(g_m1);
+   g_m1_n = 0;
+   g_study_msg = "";
+   return true;
+}
+
+void StudyLine(int row, string text, color clr) {
+   string nm = PFX + "ST_" + IntegerToString(row);
    if(ObjectFind(0, nm) < 0) {
       ObjectCreate(0, nm, OBJ_LABEL, 0, 0, 0);
       ObjectSetInteger(0, nm, OBJPROP_CORNER, CORNER_RIGHT_LOWER);
@@ -432,34 +487,70 @@ void TableLine(int row, string text) {
       ObjectSetInteger(0, nm, OBJPROP_YDISTANCE, 12 + row * 15);
       ObjectSetString(0,  nm, OBJPROP_FONT, "Consolas");
       ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, 8);
-      ObjectSetInteger(0, nm, OBJPROP_COLOR, InpClrTable);
       ObjectSetInteger(0, nm, OBJPROP_SELECTABLE, false);
       ObjectSetInteger(0, nm, OBJPROP_HIDDEN, true);
    }
-   ObjectSetString(0, nm, OBJPROP_TEXT, text);
+   ObjectSetString(0,  nm, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, nm, OBJPROP_COLOR, clr);
 }
 
-void DrawMonthTable() {
-   if(!InpShowMonthTable || !g_table_dirty) return;
-   g_table_dirty = false;
-   ObjectsDeleteAll(0, PFX + "MT_");
-   int nm   = ArraySize(g_m_key);
-   int show = MathMin(nm, MathMax(1, InpMonthRows));
-   int row  = 0;
-   // บรรทัดล่างสุด: เกณฑ์ปรับตามตลาดตอนนี้ + เกณฑ์คงที่เทียบเป็น top กี่ %
-   TableLine(row++, StringFormat("เกณฑ์ปรับตามตลาด %d วัน: T2 > %.2f / T3 > %.2f / T4 > %.2f (top %.1f / %.1f / %.1f%%) | คงที่ %.1f / %.1f / %.1f = top %.2f / %.2f / %.2f%%",
-                                 InpPctDays, g_q2, g_q3, g_q4, InpPctT2, InpPctT3, InpPctT4,
-                                 InpT2_Z, InpT3_Z, InpT4_Z, PctAbove(InpT2_Z), PctAbove(InpT3_Z), PctAbove(InpT4_Z)));
-   for(int m = nm - 1; m >= nm - show; m--) {
-      double n = MathMax(1, g_m_n[m]), q2, q3, q4;
-      Quantiles3(g_m_hist, m * NB, g_m_n[m], q2, q3, q4);
-      TableLine(row++, StringFormat("%04d-%02d %6d %6.2f%% %6.2f%% %6.2f%% %7.2f%%  | %5.2f %5.2f %5.2f",
-                                    g_m_key[m] / 12, g_m_key[m] % 12 + 1, g_m_n[m],
-                                    100.0 * g_m_c20[m] / n, 100.0 * g_m_c25[m] / n, 100.0 * g_m_c30[m] / n, 100.0 * g_m_b25[m] / n,
-                                    q2, q3, q4));
+string StatRow(string head, const StudyStat &x, string dist_fmt) {
+   double n = MathMax(1, x.n);
+   return StringFormat("%-10s %5d %6.1f%% %6.1f%% %6.1f%% %6.1f%% " + dist_fmt + " %+8.0f",
+                       head, x.n, 100.0 * x.nh / n, 100.0 * x.sl / n, 100.0 * x.rv / n, 100.0 * x.un / n,
+                       x.dist / n, x.ev / n);
+}
+
+void DrawStudyButtons(int top_y) {
+   for(int l = 0; l < N_LVL; l++) {
+      string nm = BTN_PFX + IntegerToString(l);
+      if(ObjectFind(0, nm) < 0) {
+         ObjectCreate(0, nm, OBJ_BUTTON, 0, 0, 0);
+         ObjectSetInteger(0, nm, OBJPROP_CORNER, CORNER_RIGHT_LOWER);
+         ObjectSetInteger(0, nm, OBJPROP_XSIZE, 64);
+         ObjectSetInteger(0, nm, OBJPROP_YSIZE, 20);
+         ObjectSetString(0,  nm, OBJPROP_FONT, "Arial Bold");
+         ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, 9);
+         ObjectSetInteger(0, nm, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, nm, OBJPROP_HIDDEN, true);
+      }
+      ObjectSetInteger(0, nm, OBJPROP_XDISTANCE, 10 + (N_LVL - 1 - l) * 70 + 64);
+      ObjectSetInteger(0, nm, OBJPROP_YDISTANCE, top_y + 20);
+      ObjectSetString(0,  nm, OBJPROP_TEXT, StringFormat("Z > %.1f", g_lvl[l]));
+      ObjectSetInteger(0, nm, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, nm, OBJPROP_BGCOLOR, (l == g_sel) ? clrSeaGreen : clrDimGray);
+      ObjectSetInteger(0, nm, OBJPROP_STATE, false);
+      ObjectSetString(0,  nm, OBJPROP_TOOLTIP, StringFormat("แสดงตารางถอยจากยอดของเหตุการณ์ Z ตัวใดตัวหนึ่ง > %.2f", g_lvl[l]));
    }
-   TableLine(row++, StringFormat("เดือน     แท่ง   Z>2.0   Z>2.5   Z>3.0 ทั้งคู่>2.5  | top%.1f%% %.1f%% %.1f%%", InpPctT2, InpPctT3, InpPctT4));
-   TableLine(row++, "📅 อัตราการเกิด Z ต่อแท่ง (Z_reg หรือ Z_SMA ที่ High / Low) | " + ModeText());
+}
+
+void DrawStudy() {
+   ObjectsDeleteAll(0, PFX + "ST_");
+   if(!InpShowStudy) { ObjectsDeleteAll(0, BTN_PFX); return; }
+   int l = g_sel;
+   // แถว EV ดีสุด (ไม้พอ) ของแต่ละตาราง
+   int bd = -1, bt = -1;
+   for(int b = 0; b < N_DEP; b++)
+      if(g_sd[l][b].n >= InpStudyMinN && (bd < 0 || g_sd[l][b].ev / g_sd[l][b].n > g_sd[l][bd].ev / g_sd[l][bd].n)) bd = b;
+   for(int t = 0; t < N_TIM; t++)
+      if(g_st[l][t].n >= InpStudyMinN && (bt < 0 || g_st[l][t].ev / g_st[l][t].n > g_st[l][bt].ev / g_st[l][bt].n)) bt = t;
+
+   int row = 0;   // แถว 0 = ล่างสุด
+   for(int t = N_TIM - 1; t >= 0; t--)
+      StudyLine(row++, StatRow(StringFormat(">= %d min", g_tim_m[t]), g_st[l][t], "%7.2f"), (t == bt) ? InpClrTableBest : InpClrTable);
+   StudyLine(row++, "ไม่มียอดใหม่  ไม้ ยอดใหม่ พุ่งต่อ    สวน  ไม่ชัด ถอย(ΔZ)   EV(จุด)", InpClrTable);
+   for(int b = N_DEP - 1; b >= 0; b--) {
+      if(g_dep_k[b] >= InpStudyTarget) continue;
+      StudyLine(row++, StatRow(StringFormat("dZ >= %.2f", g_dep_k[b]), g_sd[l][b], "%7.0f"), (b == bd) ? InpClrTableBest : InpClrTable);
+   }
+   StudyLine(row++, "ถอยจากยอด    ไม้ ยอดใหม่ พุ่งต่อ    สวน  ไม่ชัด ระยะ(จุด) EV(จุด)", InpClrTable);
+   StudyLine(row++, StringFormat("พุ่งต่อ = ทะลุยอด + %.0f จุด | สวน = ถอยถึง %.1fσ | รอผล %d นาทีหลังยอด | σ = SD20 ตอนแตะยอด | ไม่นับ %d นาทีแรก / %d นาทีท้ายแท่ง",
+                                 InpStudySL_Pts, InpStudyTarget, InpStudyMin, InpStudySkipFirstMin, InpStudySkipLastMin), InpClrTable);
+   string head = (g_study_msg != "") ? g_study_msg
+               : StringFormat("📊 ถอยจากยอด | Z ตัวใดตัวหนึ่ง > %.2f | %d เหตุการณ์ (SELL + BUY) | M1 %s → %s",
+                              g_lvl[l], g_ev_n[l], TimeToString(g_m1_from, TIME_DATE), TimeToString(g_m1_to, TIME_DATE));
+   StudyLine(row++, head, InpClrTable);
+   DrawStudyButtons(12 + row * 15);
 }
 
 //====================================================================
@@ -473,28 +564,23 @@ void SetPlot(int plot, color clr) {
 }
 
 int OnInit() {
-   if(InpZ_Period < 5 || InpSigmaFloorMult < 0.0 || InpT2_Z <= 0.0 || InpT3_Z < InpT2_Z || InpT4_Z < InpT3_Z ||
-      InpFloatMin < 0.0 || InpPctT2 <= 0.0 || InpPctT3 <= 0.0 || InpPctT4 <= 0.0 || InpPctT2 > 50.0 || InpPctDays < 1 || InpBarZBars < 0 || InpMonthRows < 1) {
-      Print("❌ ค่า Input ไม่ถูกต้อง (หน้าต่าง ≥ 5, T2 ≤ T3 ≤ T4, เปอร์เซ็นต์ 0-50, วัน ≥ 1)");
+   if(InpZ_Period < 5 || InpSigmaFloorMult < 0.0 || InpT2_Z <= 0.0 || InpT3_Z < InpT2_Z || InpT4_Z < InpT3_Z || InpFloatMin < 0.0 ||
+      InpBarZBars < 0 || InpStudyDays < 1 || InpStudyZ1 <= 0.0 || InpStudyZ2 <= 0.0 || InpStudyZ3 <= 0.0 ||
+      InpStudySL_Pts < 0.0 || InpStudyTarget <= 0.0 || InpStudyMin < 1 || InpStudySkipFirstMin < 0 || InpStudySkipLastMin < 0) {
+      Print("❌ ค่า Input ไม่ถูกต้อง (หน้าต่าง ≥ 5, T2 ≤ T3 ≤ T4, ค่าตารางต้องเป็นบวก)");
       return(INIT_PARAMETERS_INCORRECT);
    }
    g_pmult = (_Digits == 2 || _Digits == 4) ? 0.1 : 1.0;
    g_warm  = InpZ_Period + 2;
-   int bars = (int)((long)InpPctDays * 86400 / MathMax(60, PeriodSeconds(_Period)));
-   g_win   = MathMax(100, bars);
-   g_alpha = 2.0 / (g_win + 1.0);
+   g_lvl[0] = InpStudyZ1; g_lvl[1] = InpStudyZ2; g_lvl[2] = InpStudyZ3;
+   if(GlobalVariableCheck(GV_LVL)) g_sel = (int)MathMax(0, MathMin(N_LVL - 1, GlobalVariableGet(GV_LVL)));
 
-   SetIndexBuffer(0,  bR,    INDICATOR_DATA);
-   SetIndexBuffer(1,  bRp,   INDICATOR_DATA);
-   SetIndexBuffer(2,  bRm,   INDICATOR_DATA);
-   SetIndexBuffer(3,  bS,    INDICATOR_DATA);
-   SetIndexBuffer(4,  bSp,   INDICATOR_DATA);
-   SetIndexBuffer(5,  bSm,   INDICATOR_DATA);
-   SetIndexBuffer(6,  cThr2, INDICATOR_CALCULATIONS);
-   SetIndexBuffer(7,  cThr3, INDICATOR_CALCULATIONS);
-   SetIndexBuffer(8,  cThr4, INDICATOR_CALCULATIONS);
-   SetIndexBuffer(9,  cKr,   INDICATOR_CALCULATIONS);
-   SetIndexBuffer(10, cKs,   INDICATOR_CALCULATIONS);
+   SetIndexBuffer(0, bR,  INDICATOR_DATA);
+   SetIndexBuffer(1, bRp, INDICATOR_DATA);
+   SetIndexBuffer(2, bRm, INDICATOR_DATA);
+   SetIndexBuffer(3, bS,  INDICATOR_DATA);
+   SetIndexBuffer(4, bSp, INDICATOR_DATA);
+   SetIndexBuffer(5, bSm, INDICATOR_DATA);
    SetPlot(0, InpClrZCenter);
    SetPlot(1, InpClrZSellLine);
    SetPlot(2, InpClrZBuyLine);
@@ -505,13 +591,15 @@ int OnInit() {
    IndicatorSetString(INDICATOR_SHORTNAME, "7L Z SMA / Reg");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
    ObjectsDeleteAll(0, PFX);
-   ResetStats();
-   g_live_text = "";
+   g_live_text   = "";
+   g_study_bar   = 0;
+   g_study_retry = 0;
    return(INIT_SUCCEEDED);
 }
 
 void OnDeinit(const int reason) {
    ObjectsDeleteAll(0, PFX);
+   ArrayFree(g_m1);
 }
 
 int OnCalculate(const int rates_total, const int prev_calculated,
@@ -522,55 +610,22 @@ int OnCalculate(const int rates_total, const int prev_calculated,
    if(start == 0) {
       ObjectsDeleteAll(0, PFX + "ZL_");
       ObjectsDeleteAll(0, PFX + "FL_");
-      ResetStats();
+      g_study_bar = 0;
    }
    int last = rates_total - 1;
    int from = (InpBarZBars > 0) ? MathMax(g_warm, rates_total - InpBarZBars) : g_warm;
+   double t2 = InpT2_Z;
 
    for(int i = start; i < rates_total; i++) {
       bR[i] = EMPTY_VALUE; bRp[i] = EMPTY_VALUE; bRm[i] = EMPTY_VALUE;
       bS[i] = EMPTY_VALUE; bSp[i] = EMPTY_VALUE; bSm[i] = EMPTY_VALUE;
-      // เกณฑ์ PCT ของแท่งนี้ = จากหน้าต่างของแท่งที่ปิดก่อนหน้า (ไม่มองอนาคต)
-      bool full = (g_ring_n >= MathMin(g_win, 200));
-      cThr2[i] = full ? g_q2 : 0.0;
-      cThr3[i] = full ? g_q3 : 0.0;
-      cThr4[i] = full ? g_q4 : 0.0;
-      cKr[i]   = (i > 0) ? cKr[i - 1] : 0.0;
-      cKs[i]   = (i > 0) ? cKs[i - 1] : 0.0;
       if(i < g_warm) continue;
 
-      // ตัวปรับสเกลโหมด RANGE: อัปเดตเมื่อแท่งปิดแล้วเท่านั้น
-      double fit0, sig_r0, mean0, sd_s0;
-      bool   core = ZCore(close, i, close[i], fit0, sig_r0, mean0, sd_s0);
-      if(core && i < last) {
-         double sp = RangeSigma(high, low, i);
-         if(sp > 0.0) {
-            double rr = sig_r0 / sp, rs = sd_s0 / sp;
-            cKr[i] = (cKr[i - 1] > 0.0) ? cKr[i - 1] + g_alpha * (rr - cKr[i - 1]) : rr;
-            cKs[i] = (cKs[i - 1] > 0.0) ? cKs[i - 1] + g_alpha * (rs - cKs[i - 1]) : rs;
-         }
-      }
-
       // เส้นย้อนหลัง (ณ ราคาปิด) ± เกณฑ์ T2
-      double zr, zs, fit, sr, mean, ss, t2, t3, t4;
-      Thresholds(i, t2, t3, t4);
-      if(ZAt(close, high, low, i, close[i], zr, zs, fit, sr, mean, ss)) {
+      double zr, zs, fit, sr, mean, ss;
+      if(ZAt(close, i, close[i], zr, zs, fit, sr, mean, ss)) {
          bR[i] = fit;  bRp[i] = fit + t2 * sr;  bRm[i] = fit - t2 * sr;
          bS[i] = mean; bSp[i] = mean + t2 * ss; bSm[i] = mean - t2 * ss;
-      }
-
-      // Z สุดขั้วของแท่ง (ตัวใดตัวหนึ่ง / ทั้งคู่) → หน้าต่าง PCT + ตารางรายเดือน (แท่งปิดแล้ว นับครั้งเดียว)
-      if(i < last && i >= g_next_push) {
-         double hr, hs, lr, ls, f1, s1, m1, q1;
-         bool okh = ZAt(close, high, low, i, high[i], hr, hs, f1, s1, m1, q1);
-         bool okl = ZAt(close, high, low, i, low[i],  lr, ls, f1, s1, m1, q1);
-         if(okh && okl) {
-            double e  = MathMax(MathMax(hr, hs), MathMax(-lr, -ls));
-            double eb = MathMax(MathMin(hr, hs), MathMin(-lr, -ls));
-            WindowPush(e);
-            MonthAdd(time[i], e, eb);
-         }
-         g_next_push = i + 1;
       }
 
       // ป้ายบนแท่ง (แท่งปัจจุบันประเมินใหม่ทุก Tick)
@@ -589,30 +644,42 @@ int OnCalculate(const int rates_total, const int prev_calculated,
    }
 
    // เส้นระดับ + ป้าย Z สด ณ ราคาล่าสุด
-   double zr, zs, fit, sr, mean, ss, t2, t3, t4;
-   Thresholds(last, t2, t3, t4);
-   if(ZAt(close, high, low, last, close[last], zr, zs, fit, sr, mean, ss)) {
+   double zr, zs, fit, sr, mean, ss;
+   if(ZAt(close, last, close[last], zr, zs, fit, sr, mean, ss)) {
       HLine("R_MAIN", fit,            InpClrZCenter,     STYLE_DOT,     "[Regression] เส้นกลาง Z = 0");
-      HLine("R_SELL", fit + t2 * sr,  InpClrZSellLine,   STYLE_DASH,    StringFormat("[Regression] SELL T2 Z > +%.2f (%s)", t2, ModeText()));
-      HLine("R_BUY",  fit - t2 * sr,  InpClrZBuyLine,    STYLE_DASH,    StringFormat("[Regression] BUY T2 Z < −%.2f (%s)", t2, ModeText()));
+      HLine("R_SELL", fit + t2 * sr,  InpClrZSellLine,   STYLE_DASH,    StringFormat("[Regression] SELL T2 Z > +%.2f", t2));
+      HLine("R_BUY",  fit - t2 * sr,  InpClrZBuyLine,    STYLE_DASH,    StringFormat("[Regression] BUY T2 Z < −%.2f", t2));
       HLine("S_MAIN", mean,           InpClrSmaCenter,   STYLE_DOT,     "[SMA20] เส้นกลาง Z = 0");
-      HLine("S_SELL", mean + t2 * ss, InpClrSmaSellLine, STYLE_DASHDOT, StringFormat("[SMA20] SELL T2 Z > +%.2f (%s)", t2, ModeText()));
-      HLine("S_BUY",  mean - t2 * ss, InpClrSmaBuyLine,  STYLE_DASHDOT, StringFormat("[SMA20] BUY T2 Z < −%.2f (%s)", t2, ModeText()));
+      HLine("S_SELL", mean + t2 * ss, InpClrSmaSellLine, STYLE_DASHDOT, StringFormat("[SMA20] SELL T2 Z > +%.2f", t2));
+      HLine("S_BUY",  mean - t2 * ss, InpClrSmaBuyLine,  STYLE_DASHDOT, StringFormat("[SMA20] BUY T2 Z < −%.2f", t2));
       double z = (MathAbs(zr) >= MathAbs(zs)) ? zr : zs;
       g_live_clr  = (z > t2) ? InpClrLiveSell : (z < -t2) ? InpClrLiveBuy
                   : (MathAbs(z) >= t2 - NEAR_ZONE) ? InpClrLiveNear : InpClrLiveNormal;
       g_live_text = StringFormat("R %+.2f | S %+.2f ▶", zr, zs);
       g_live_bid  = close[last];
-      g_live_tip  = StringFormat("Z_reg %+.3f (กลาง %s) | Z_SMA %+.3f (SMA20 %s) | เกณฑ์ T2 %.2f / T3 %.2f / T4 %.2f | %s",
-                                 zr, DoubleToString(fit, _Digits), zs, DoubleToString(mean, _Digits), t2, t3, t4, ModeText());
+      g_live_tip  = StringFormat("Z_reg %+.3f (กลาง %s) | Z_SMA %+.3f (SMA20 %s) | เกณฑ์ T2 %.2f / T3 %.2f / T4 %.2f",
+                                 zr, DoubleToString(fit, _Digits), zs, DoubleToString(mean, _Digits), t2, InpT3_Z, InpT4_Z);
       DrawLiveZ();
    }
-   DrawMonthTable();
+
+   // ตารางถอยจากยอด: คำนวณใหม่เมื่อขึ้นแท่งใหม่ (ข้อมูล M1 ยังไม่พร้อม → ลองใหม่ทุก 5 วินาที)
+   if(InpShowStudy && time[last] != g_study_bar && GetTickCount() >= g_study_retry) {
+      if(RunStudy(close, time, rates_total)) g_study_bar = time[last];
+      else                                   g_study_retry = GetTickCount() + 5000;
+      DrawStudy();
+   }
    return(rates_total);
 }
 
-// เลื่อน/ซูมกราฟ → จัดตำแหน่งป้าย Z สดใหม่
+// เลื่อน/ซูมกราฟ → จัดตำแหน่งป้าย Z สดใหม่ | คลิกปุ่มระดับ → สลับตาราง
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam) {
+   if(id == CHARTEVENT_OBJECT_CLICK && StringFind(sparam, BTN_PFX) == 0) {
+      g_sel = (int)MathMax(0, MathMin(N_LVL - 1, StringToInteger(StringSubstr(sparam, StringLen(BTN_PFX)))));
+      GlobalVariableSet(GV_LVL, g_sel);
+      DrawStudy();
+      ChartRedraw(0);
+      return;
+   }
    if(id != CHARTEVENT_CHART_CHANGE) return;
    DrawLiveZ();
    ChartRedraw(0);
