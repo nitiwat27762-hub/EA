@@ -6,7 +6,14 @@ indicator EA XAUUSD
 | ไฟล์ | เวอร์ชัน | รายละเอียด |
 |---|---|---|
 | `Indicators/Seven_Lines_Exhaustion_Ind.mq5` | 8.82 | 7-Lines Exhaustion + Z-Score (MQL5) |
-| `Indicators/Seven_Lines_Context_Ind.mq5` | 3.10 | Z_reg / Z_SMA แบบเดียวกับ Counter EA + ตารางถอยจากยอด (no new Z): ถอยแค่ไหนคือสวนกลับ / พุ่งต่อ |
+| `Indicators/Seven_Lines_Context_Ind.mq5` | 3.11 | Z_reg / Z_SMA แบบเดียวกับ Counter EA + ตารางถอยจากยอด (no new Z): ถอยแค่ไหนคือสวนกลับ / พุ่งต่อ |
+
+### Context Indicator v3.11 — บันทึกผลตารางถอยจากยอดเป็น CSV (เปิดด้วย Excel)
+- ปุ่ม **💾 CSV** ข้างปุ่มระดับ → บันทึก 2 ไฟล์ลง `MQL5/Files`
+  - `7LCTX_Study_<symbol>_<TF>.csv` = สรุปทุกระดับ (2.5 / 3.0 / 3.5) × ทุกแถวของทั้งสองตาราง
+    - คอลัมน์: level_z, events, table, row, trades, new_peak_pct, cont_pct, rev_pct, unc_pct, avg_pullback, ev_pts
+  - `7LCTX_Study_<symbol>_<TF>_trades.csv` = ไม้สมมติทุกไม้
+    - คอลัมน์: level_z, side, table, row, bar_time, peak_time, entry_time, result_time, z_peak, peak, entry, sigma_pts, pullback_pts, pullback_dz, result (CONT / REV / UNC), new_peak, pnl_pts
 
 ### Context Indicator v3.10 — ตารางถอยจากยอด (no new Z)
 - ตัดตารางรายเดือนและโหมด PCT / RANGE ออก เพราะผลทดสอบพบว่าความผันผวนที่เพิ่มขึ้นตามปีไม่มีนัยสำคัญทางสถิติ

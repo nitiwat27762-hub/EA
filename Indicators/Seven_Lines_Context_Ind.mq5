@@ -19,9 +19,10 @@
 //    ตาราง 2: ไม่มียอดใหม่ครบ N นาที → เข้าที่ราคาปิดของแท่ง M1 นั้น
 //  • ผล (อะไรเกิดก่อน ภายใน InpStudyMin นาทีหลังยอด): พุ่งต่อ = ทะลุยอด + 500 จุด (SL ของ EA) / สวน = ถอยถึง ยอด − 2σ / ไม่ชัด
 //    ยอดใหม่ = ราคาทะลุยอดเดิม (เท่าไรก็ได้) ก่อนสวน, EV = กำไรเฉลี่ยต่อไม้ (จุด) ถ้าเข้าตามแถวนั้น
+//  • ปุ่ม "💾 CSV" → MQL5/Files: 7LCTX_Study_<symbol>_<TF>.csv (สรุปทุกระดับ) + ..._trades.csv (ทุกไม้สมมติ) เปิดด้วย Excel ได้
 //
 #property copyright   "Commander's Quant System"
-#property version     "3.10"
+#property version     "3.11"
 #property description "Z_reg / Z_SMA แบบเดียวกับ Counter EA + ตารางถอยจากยอด: ถอยแค่ไหนคือสวนกลับ / พุ่งต่อ"
 #property indicator_chart_window
 #property indicator_buffers 6
@@ -110,6 +111,7 @@ input color           InpClrTableBest      = clrLimeGreen;      // ตารา�
 const string PFX       = "7LCTX_";
 const string BTN_PFX   = "7LCTX_BTN_";
 const string GV_LVL    = "7LCTX_STUDY_LVL";
+const string BTN_CSV   = "7LCTX_CSVBTN";
 const double NEAR_ZONE = 0.5;
 #define N_LVL 3
 #define N_DEP 7
@@ -139,6 +141,26 @@ struct StudyStat {
    double dist;    // ผลรวมระยะถอย (ตาราง 1: จุด, ตาราง 2: ΔZ)
    double ev;      // ผลรวมกำไร (จุด)
 };
+// ไม้สมมติแต่ละไม้ (สำหรับบันทึก CSV)
+struct StudySample {
+   int      lvl;      // ช่องระดับ (0..2)
+   int      side;     // +1 = SELL, −1 = BUY
+   int      kind;     // 0 = ถอย ≥ ΔZ, 1 = ไม่มียอดใหม่ครบ N นาที
+   double   key;      // ΔZ หรือ นาที ของแถว
+   datetime bar_t;    // เวลาแท่งของกราฟ
+   datetime peak_t;   // เวลาแท่ง M1 ที่ทำยอด
+   datetime entry_t;  // เวลาแท่ง M1 ที่เข้า
+   datetime res_t;    // เวลาแท่ง M1 ที่ได้ผล
+   double   z_peak;   // Z ตัวใหญ่สุดที่ยอด (ในทิศของฝั่ง)
+   double   peak;     // ราคายอด (ราคาจริง)
+   double   entry;    // ราคาเข้า (ราคาจริง)
+   double   sig;      // SD20 ตอนแตะยอด (ราคา)
+   int      res;      // RES_SL / RES_RV / RES_UN
+   bool     nh;       // ทำยอดใหม่ก่อนสวน
+   double   pnl;      // กำไร (ราคา)
+};
+StudySample g_smp[];
+int         g_smp_n = 0;
 StudyStat g_sd[N_LVL][N_DEP];
 StudyStat g_st[N_LVL][N_TIM];
 int       g_ev_n[N_LVL];
@@ -360,11 +382,12 @@ void StatAdd(StudyStat &x, int res, bool nh, double pnl, double dist) {
 //   lo_same = ราคาที่ทำให้เกิดไม้ (เช็คเป้าก่อน), hi_same = แท่ง M1 นี้ Low มาก่อน High → High ของแท่งเดียวกันเกิดหลังจุดเข้า
 //   คืน false = ข้อมูลยังไม่พอ (ไม้ล่าสุดที่ยังไม่จบ) → ไม่นับ
 bool Resolve(int s, int m0, double lo_same, bool hi_same, double peakT, double sig, double entryT, datetime t_peak,
-             int &res, bool &nh, double &pnl) {
+             int &res, bool &nh, double &pnl, datetime &t_res) {
    double   slT   = peakT + PtsToPrice(InpStudySL_Pts);
    double   tgT   = peakT - InpStudyTarget * sig;
    datetime t_end = t_peak + (datetime)InpStudyMin * 60;
-   nh = false;
+   nh    = false;
+   t_res = g_m1[m0].time;
    if(lo_same <= tgT) { res = RES_RV; pnl = entryT - tgT; return true; }
    if(hi_same) {
       double h0 = M1Hi(m0, s);
@@ -372,7 +395,8 @@ bool Resolve(int s, int m0, double lo_same, bool hi_same, double peakT, double s
       if(h0 >= slT) { res = RES_SL; pnl = entryT - slT; return true; }
    }
    for(int m = m0 + 1; m < g_m1_n; m++) {
-      if(g_m1[m].time >= t_end) { res = RES_UN; pnl = entryT - M1Cl(m - 1, s); return true; }
+      if(g_m1[m].time >= t_end) { res = RES_UN; pnl = entryT - M1Cl(m - 1, s); t_res = g_m1[m - 1].time; return true; }
+      t_res = g_m1[m].time;
       double hi = M1Hi(m, s), lo = M1Lo(m, s);
       bool   hf = M1Op(m, s) > M1Cl(m, s);      // แท่งแดง (ในทิศของฝั่ง) = High มาก่อน Low
       if(hf) {
@@ -388,11 +412,32 @@ bool Resolve(int s, int m0, double lo_same, bool hi_same, double peakT, double s
    return false;
 }
 
+void AddSample(int l, int s, int kind, double key, datetime bar_t, datetime peak_t, datetime entry_t, datetime res_t,
+               double z_peak, double peakT, double entryT, double sig, int res, bool nh, double pnl) {
+   if(g_smp_n >= ArraySize(g_smp)) ArrayResize(g_smp, g_smp_n + 1, 20000);
+   g_smp[g_smp_n].lvl     = l;
+   g_smp[g_smp_n].side    = s;
+   g_smp[g_smp_n].kind    = kind;
+   g_smp[g_smp_n].key     = key;
+   g_smp[g_smp_n].bar_t   = bar_t;
+   g_smp[g_smp_n].peak_t  = peak_t;
+   g_smp[g_smp_n].entry_t = entry_t;
+   g_smp[g_smp_n].res_t   = res_t;
+   g_smp[g_smp_n].z_peak  = z_peak;
+   g_smp[g_smp_n].peak    = s * peakT;
+   g_smp[g_smp_n].entry   = s * entryT;
+   g_smp[g_smp_n].sig     = sig;
+   g_smp[g_smp_n].res     = res;
+   g_smp[g_smp_n].nh      = nh;
+   g_smp[g_smp_n].pnl     = pnl;
+   g_smp_n++;
+}
+
 // เหตุการณ์ของแท่งกราฟ i ฝั่ง s ระดับ l: แท่ง M1 [ma, mb)
 void StudyBar(const double &c[], int i, datetime t0, int ma, int mb, int s, int l) {
    int      mins   = PeriodSeconds(_Period) / 60;
    bool     active = false;
-   double   peak   = -DBL_MAX, sig = 0.0;
+   double   peak   = -DBL_MAX, sig = 0.0, zpk = 0.0;
    datetime tpk    = 0;
    bool     dd[N_DEP], dt[N_TIM];
    for(int b = 0; b < N_DEP; b++) dd[b] = false;
@@ -406,10 +451,10 @@ void StudyBar(const double &c[], int i, datetime t0, int ma, int mb, int s, int 
          bool   is_hi = ((q == 0) == hf);
          double p     = is_hi ? M1Hi(m, s) : M1Lo(m, s);
          if(is_hi) {
-            if(p > peak) { peak = p; tpk = g_m1[m].time; if(active) ZSide(c, i, peak, s, sig); }
+            if(p > peak) { peak = p; tpk = g_m1[m].time; if(active) zpk = ZSide(c, i, peak, s, sig); }
             if(!active && allowed) {
                double sg;
-               if(ZSide(c, i, p, s, sg) > g_lvl[l]) { active = true; g_ev_n[l]++; ZSide(c, i, peak, s, sig); }
+               if(ZSide(c, i, p, s, sg) > g_lvl[l]) { active = true; g_ev_n[l]++; zpk = ZSide(c, i, peak, s, sig); }
             }
             continue;
          }
@@ -419,10 +464,13 @@ void StudyBar(const double &c[], int i, datetime t0, int ma, int mb, int s, int 
             if(dd[b] || g_dep_k[b] >= InpStudyTarget || ret < g_dep_k[b] * sig) continue;
             dd[b] = true;
             double entry = peak - g_dep_k[b] * sig, pnl;
-            int    res;
-            bool   nh;
-            if(Resolve(s, m, p, !hf, peak, sig, entry, tpk, res, nh, pnl))
+            int      res;
+            bool     nh;
+            datetime tr;
+            if(Resolve(s, m, p, !hf, peak, sig, entry, tpk, res, nh, pnl, tr)) {
                StatAdd(g_sd[l][b], res, nh, pnl, PriceToPts(g_dep_k[b] * sig));
+               AddSample(l, s, 0, g_dep_k[b], t0, tpk, g_m1[m].time, tr, zpk, peak, entry, sig, res, nh, pnl);
+            }
          }
       }
       if(!active || !allowed || sig <= 0.0) continue;
@@ -431,16 +479,20 @@ void StudyBar(const double &c[], int i, datetime t0, int ma, int mb, int s, int 
          dt[t] = true;
          double entry = M1Cl(m, s), pnl;
          if(entry <= peak - InpStudyTarget * sig) continue;    // สวนถึงเป้าไปแล้ว
-         int    res;
-         bool   nh;
-         if(Resolve(s, m, DBL_MAX, false, peak, sig, entry, tpk, res, nh, pnl))
+         int      res;
+         bool     nh;
+         datetime tr;
+         if(Resolve(s, m, DBL_MAX, false, peak, sig, entry, tpk, res, nh, pnl, tr)) {
             StatAdd(g_st[l][t], res, nh, pnl, (peak - entry) / sig);
+            AddSample(l, s, 1, g_tim_m[t], t0, tpk, g_m1[m].time, tr, zpk, peak, entry, sig, res, nh, pnl);
+         }
       }
    }
 }
 
 // คำนวณตารางใหม่ทั้งหมด (เรียกเมื่อขึ้นแท่งใหม่ของกราฟ) — คืน false = ข้อมูล M1 ยังไม่พร้อม ลองใหม่ภายหลัง
 bool RunStudy(const double &c[], const datetime &time[], int rates_total) {
+   g_smp_n = 0;
    for(int l = 0; l < N_LVL; l++) {
       g_ev_n[l] = 0;
       for(int b = 0; b < N_DEP; b++) StatClear(g_sd[l][b]);
@@ -501,6 +553,56 @@ string StatRow(string head, const StudyStat &x, string dist_fmt) {
                        x.dist / n, x.ev / n);
 }
 
+string ResCode(int res) { return (res == RES_SL) ? "CONT" : (res == RES_RV) ? "REV" : "UNC"; }
+
+string StudyFileBase() {
+   string tf = EnumToString((ENUM_TIMEFRAMES)_Period);
+   StringReplace(tf, "PERIOD_", "");
+   return "7LCTX_Study_" + _Symbol + "_" + tf;
+}
+
+string SummaryCsvRow(int l, string table, double key, const StudyStat &x, int dist_dig) {
+   double n = MathMax(1, x.n);
+   return StringFormat("%.2f,%d,%s,%.2f,%d,%.1f,%.1f,%.1f,%.1f,%s,%.0f\r\n", g_lvl[l], g_ev_n[l], table, key, x.n,
+                       100.0 * x.nh / n, 100.0 * x.sl / n, 100.0 * x.rv / n, 100.0 * x.un / n,
+                       DoubleToString(x.dist / n, dist_dig), x.ev / n);
+}
+
+// บันทึกผลตาราง (สรุป + ทุกไม้สมมติ) ลง MQL5/Files — เปิดด้วย Excel ได้
+void WriteStudyCSV() {
+   if(g_study_bar == 0 || g_study_msg != "") { Print("⚠️ ตารางถอยจากยอดยังคำนวณไม่เสร็จ — ลองใหม่อีกครั้ง"); return; }
+   string fs = StudyFileBase() + ".csv", ft = StudyFileBase() + "_trades.csv";
+   int h = FileOpen(fs, FILE_WRITE | FILE_TXT | FILE_ANSI);
+   if(h == INVALID_HANDLE) { PrintFormat("⚠️ เขียนไฟล์ %s ไม่สำเร็จ (error %d)", fs, GetLastError()); return; }
+   FileWriteString(h, StringFormat("# m1_from=%s m1_to=%s cont=peak+%.0fpts rev=peak-%.1fsigma wait=%dmin skip_first=%dmin skip_last=%dmin sigma=SD20_at_peak\r\n",
+                                   TimeToString(g_m1_from, TIME_DATE), TimeToString(g_m1_to, TIME_DATE), InpStudySL_Pts, InpStudyTarget,
+                                   InpStudyMin, InpStudySkipFirstMin, InpStudySkipLastMin));
+   FileWriteString(h, "level_z,events,table,row,trades,new_peak_pct,cont_pct,rev_pct,unc_pct,avg_pullback,ev_pts\r\n");
+   for(int l = 0; l < N_LVL; l++) {
+      for(int b = 0; b < N_DEP; b++)
+         if(g_dep_k[b] < InpStudyTarget) FileWriteString(h, SummaryCsvRow(l, "pullback_dz", g_dep_k[b], g_sd[l][b], 0));
+      for(int t = 0; t < N_TIM; t++) FileWriteString(h, SummaryCsvRow(l, "no_new_peak_min", g_tim_m[t], g_st[l][t], 3));
+   }
+   FileClose(h);
+
+   h = FileOpen(ft, FILE_WRITE | FILE_TXT | FILE_ANSI);
+   if(h == INVALID_HANDLE) { PrintFormat("⚠️ เขียนไฟล์ %s ไม่สำเร็จ (error %d)", ft, GetLastError()); return; }
+   FileWriteString(h, "level_z,side,table,row,bar_time,peak_time,entry_time,result_time,z_peak,peak,entry,sigma_pts,pullback_pts,pullback_dz,result,new_peak,pnl_pts\r\n");
+   for(int k = 0; k < g_smp_n; k++) {
+      double d = MathAbs(g_smp[k].peak - g_smp[k].entry);
+      FileWriteString(h, StringFormat("%.2f,%s,%s,%.2f,%s,%s,%s,%s,%.3f,%s,%s,%.0f,%.0f,%.3f,%s,%d,%.0f\r\n",
+                                      g_lvl[g_smp[k].lvl], (g_smp[k].side > 0 ? "SELL" : "BUY"), (g_smp[k].kind == 0 ? "pullback_dz" : "no_new_peak_min"),
+                                      g_smp[k].key, TimeToString(g_smp[k].bar_t, TIME_DATE|TIME_MINUTES),
+                                      TimeToString(g_smp[k].peak_t, TIME_DATE|TIME_MINUTES), TimeToString(g_smp[k].entry_t, TIME_DATE|TIME_MINUTES),
+                                      TimeToString(g_smp[k].res_t, TIME_DATE|TIME_MINUTES), g_smp[k].z_peak,
+                                      DoubleToString(g_smp[k].peak, _Digits), DoubleToString(g_smp[k].entry, _Digits),
+                                      PriceToPts(g_smp[k].sig), PriceToPts(d), (g_smp[k].sig > 0.0 ? d / g_smp[k].sig : 0.0),
+                                      ResCode(g_smp[k].res), (g_smp[k].nh ? 1 : 0), PriceToPts(g_smp[k].pnl)));
+   }
+   FileClose(h);
+   PrintFormat("💾 บันทึกตารางถอยจากยอด → MQL5\\Files\\%s (สรุป) + %s (%d ไม้)", fs, ft, g_smp_n);
+}
+
 void DrawStudyButtons(int top_y) {
    for(int l = 0; l < N_LVL; l++) {
       string nm = BTN_PFX + IntegerToString(l);
@@ -522,11 +624,28 @@ void DrawStudyButtons(int top_y) {
       ObjectSetInteger(0, nm, OBJPROP_STATE, false);
       ObjectSetString(0,  nm, OBJPROP_TOOLTIP, StringFormat("แสดงตารางถอยจากยอดของเหตุการณ์ Z ตัวใดตัวหนึ่ง > %.2f", g_lvl[l]));
    }
+   if(ObjectFind(0, BTN_CSV) < 0) {
+      ObjectCreate(0, BTN_CSV, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, BTN_CSV, OBJPROP_CORNER, CORNER_RIGHT_LOWER);
+      ObjectSetInteger(0, BTN_CSV, OBJPROP_XSIZE, 64);
+      ObjectSetInteger(0, BTN_CSV, OBJPROP_YSIZE, 20);
+      ObjectSetString(0,  BTN_CSV, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, BTN_CSV, OBJPROP_FONTSIZE, 9);
+      ObjectSetInteger(0, BTN_CSV, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, BTN_CSV, OBJPROP_BGCOLOR, clrSteelBlue);
+      ObjectSetInteger(0, BTN_CSV, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, BTN_CSV, OBJPROP_HIDDEN, true);
+      ObjectSetString(0,  BTN_CSV, OBJPROP_TEXT, "💾 CSV");
+      ObjectSetString(0,  BTN_CSV, OBJPROP_TOOLTIP, "บันทึกผลตาราง (ทุกระดับ + ทุกไม้สมมติ) ลง MQL5\\Files เปิดด้วย Excel ได้");
+   }
+   ObjectSetInteger(0, BTN_CSV, OBJPROP_XDISTANCE, 10 + N_LVL * 70 + 64);
+   ObjectSetInteger(0, BTN_CSV, OBJPROP_YDISTANCE, top_y + 20);
+   ObjectSetInteger(0, BTN_CSV, OBJPROP_STATE, false);
 }
 
 void DrawStudy() {
    ObjectsDeleteAll(0, PFX + "ST_");
-   if(!InpShowStudy) { ObjectsDeleteAll(0, BTN_PFX); return; }
+   if(!InpShowStudy) { ObjectsDeleteAll(0, BTN_PFX); ObjectDelete(0, BTN_CSV); return; }
    int l = g_sel;
    // แถว EV ดีสุด (ไม้พอ) ของแต่ละตาราง
    int bd = -1, bt = -1;
@@ -600,6 +719,7 @@ int OnInit() {
 void OnDeinit(const int reason) {
    ObjectsDeleteAll(0, PFX);
    ArrayFree(g_m1);
+   ArrayFree(g_smp);
 }
 
 int OnCalculate(const int rates_total, const int prev_calculated,
@@ -671,8 +791,14 @@ int OnCalculate(const int rates_total, const int prev_calculated,
    return(rates_total);
 }
 
-// เลื่อน/ซูมกราฟ → จัดตำแหน่งป้าย Z สดใหม่ | คลิกปุ่มระดับ → สลับตาราง
+// เลื่อน/ซูมกราฟ → จัดตำแหน่งป้าย Z สดใหม่ | คลิกปุ่มระดับ → สลับตาราง | ปุ่ม CSV → บันทึกไฟล์
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam) {
+   if(id == CHARTEVENT_OBJECT_CLICK && sparam == BTN_CSV) {
+      WriteStudyCSV();
+      ObjectSetInteger(0, BTN_CSV, OBJPROP_STATE, false);
+      ChartRedraw(0);
+      return;
+   }
    if(id == CHARTEVENT_OBJECT_CLICK && StringFind(sparam, BTN_PFX) == 0) {
       g_sel = (int)MathMax(0, MathMin(N_LVL - 1, StringToInteger(StringSubstr(sparam, StringLen(BTN_PFX)))));
       GlobalVariableSet(GV_LVL, g_sel);
