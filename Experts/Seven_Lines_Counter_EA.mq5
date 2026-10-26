@@ -19,8 +19,9 @@
 //  • T2 ต้องเป็นแท่งลอย Z_float > 1.8 (ราคาเปิดแท่ง − SMA ตอนเปิดแท่ง) ÷ SD20 — T3 / T4 ไม่ต้องลอย
 //  • "ไม่มีค่าสุดขั้วใหม่" นับจากราคา (Bid ทำ High ใหม่ฝั่ง SELL / Low ใหม่ฝั่ง BUY เกิน 100 จุด) ไม่ใช่จาก Z
 //    เพราะ Z_SMA มีเพดาน √(n−1) = 4.36 → ใกล้เพดานราคาวิ่งต่อได้มากแต่ Z แทบไม่ขยับ
-//  • โหมด LH (ปุ่ม LH ON/OFF): ยิงเฉพาะตอนยืนยันโหนดที่ "ยอดที่สองต่ำกว่ายอดแรก" ≥ 0.10 Z (Z สุดขั้วของการเฝ้า − Z ที่โหนด)
-//    แทนตัวจับเวลา (ทุกระดับรวม T4) — ปิดอยู่ = ใช้ตัวจับเวลาตามเดิม
+//  • โหมด LH (ปุ่ม LH ON/OFF): ยิงเฉพาะตอนยืนยันโหนดที่ "ยอดที่สองต่ำกว่ายอดแรก" 0.10 - 0.50 Z และ Z ที่โหนด ≥ 2.0
+//    แทนตัวจับเวลา (ทุกระดับรวม T4), ยอดที่สองอยู่ในแท่งเดียวกับยอดแรกหรือแท่งถัดไปได้ 1 แท่ง
+//    (ยอดแรก = ราคาสุดขั้วตั้งแต่เริ่มเฝ้า, เทียบ Z ด้วยหน้าต่างของแท่งที่เกิดโหนด) — ปิดอยู่ = ใช้ตัวจับเวลาตามเดิม
 //  • Z* = Z_SMA แบบไม่มีเพดาน = Z · √(n ÷ (n − 1 − Z²)) (ระยะจากค่าเฉลี่ย 19 แท่งก่อน ÷ SD ของ 19 แท่งนั้น) — แสดง + บันทึก
 //  • ระหว่างจับเวลา Z หลุดเกณฑ์ได้ (ไม่ยกเลิก, ใช้ระดับลึกสุดที่ไปถึง) — ยกเลิกเมื่อขึ้นแท่งใหม่ / เข้าช่วงห้าม
 //    + การเฝ้าระดับ T2: Z ตัวใดตัวหนึ่งกลับถึง 0 (เส้นกลาง) → ยกเลิกแล้วรอสัญญาณใหม่
@@ -51,7 +52,7 @@
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "12.90"
+#property version     "12.91"
 #property description "สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว สำหรับ XAUUSD (บัญชี Hedging)"
 
 #include <Trade\Trade.mqh>
@@ -71,7 +72,9 @@ input int             InpT2_Sec            = 5;          // T2: ยิงเม�
 input double          InpT3_Z              = 3.00;       // T3: Z_reg หรือ Z_SMA ตัวใดตัวหนึ่ง > ค่านี้ (ไม่ต้องลอย)
 input int             InpT3_Sec            = 2;          // T3: ยิงเมื่อไม่มีค่าสุดขั้วใหม่ครบกี่วินาที
 input bool            InpEnableLH          = false;      // โหมด LH: ยิงเมื่อยืนยันโหนดที่ต่ำกว่ายอดของการเฝ้า (ค่าเริ่มต้น — สลับได้ด้วยปุ่มบนกราฟ)
-input double          InpLH_MinZ           = 0.10;       // โหมด LH: ยอดที่สอง (โหนด) ต้องต่ำกว่ายอดแรก (Z สุดขั้วของการเฝ้า) อย่างน้อยกี่ Z
+input double          InpLH_MinZ           = 0.10;       // โหมด LH: ยอดที่สอง (โหนด) ต้องต่ำกว่ายอดแรกอย่างน้อยกี่ Z
+input double          InpLH_MaxZ           = 0.50;       // โหมด LH: ยอดที่สองต่ำกว่ายอดแรกได้ไม่เกินกี่ Z (ห่างกว่านี้ไม่เข้า)
+input double          InpLH_NodeMinZ       = 2.00;       // โหมด LH: Z ที่ยอดที่สอง (ตัวที่มากกว่า) ต้องยังสูงอย่างน้อยเท่านี้
 input double          InpT4_Z              = 3.50;       // T4: Z_reg หรือ Z_SMA ตัวใดตัวหนึ่ง > ค่านี้ → ยิงทันที (ไม่ต้องลอย)
 input bool            InpFloatFilter       = true;       // T2 ต้องเป็นแท่งลอยตัว: ราคาเปิดแท่งพ้นเส้น SMA ตอนเปิดแท่ง (SELL เหนือ / BUY ใต้)
 input double          InpFloatMin          = 1.80;       // T2 ทำงานเมื่อแท่งลอย Z_float > ค่านี้ (หน่วย SD20, 0 = แค่ราคาเปิดพ้น SMA)
@@ -917,7 +920,43 @@ bool NodeCheck(NodeSide &ns, const NodeFit &f, int dir, bool watching, datetime 
    return true;
 }
 
-// ค่าของโหนด + เทียบกับยอดของการเฝ้า (lower high = โหนดต่ำกว่ายอด) → เก็บลง ns ด้วย
+// ยอดแรกของโหมด LH (แยกฝั่ง): เกิดขึ้นเมื่อเฝ้า T2-T4, อยู่ต่อได้ถึงสิ้นแท่งถัดไป (การเฝ้าล้างเมื่อขึ้นแท่งใหม่ แต่ยอดแรกยังอยู่)
+//   ext_px = ราคาสุดขั้วตั้งแต่เริ่ม (ราคาทำยอดใหม่ในแท่งถัดไป = ยอดแรกขยับตาม), จบเมื่อ Z ตัวใดกลับถึง 0 / เลยแท่งถัดไป / ยิงแล้ว
+struct LHCtx {
+   bool     active;
+   int      tier;     // ระดับลึกสุดที่เฝ้าได้
+   double   ext_px;   // ราคายอดแรก
+   datetime bar;      // แท่งล่าสุดที่การเฝ้าทำงาน
+};
+
+LHCtx g_lhc_s, g_lhc_b;   // EA จริง
+
+void LHCtxStep(LHCtx &c, int dir, const WatchState &w, double bid, double zr, double zs, datetime bar) {
+   if(c.active && bar > c.bar + (datetime)PeriodSeconds(InpZ_Timeframe)) c.active = false;   // เลยแท่งถัดไป
+   double a = MathMin((dir == -1) ? zr : -zr, (dir == -1) ? zs : -zs);
+   if(c.active && a <= 0.0) c.active = false;                                                 // Z กลับถึงเส้นกลาง
+   if(w.active) {
+      if(!c.active) { c.active = true; c.tier = w.tier; c.ext_px = w.ext_px; }
+      c.tier = MathMax(c.tier, w.tier);
+      c.bar  = bar;
+   }
+   if(c.active && (dir == -1 ? bid > c.ext_px : bid < c.ext_px)) c.ext_px = bid;
+}
+
+// การเฝ้าสำหรับยิงโหมด LH: ระดับจากยอดแรก (แท่งถัดไปการเฝ้าอาจไม่ทำงานแล้ว), Z สุดขั้ว = Z ของราคายอดแรกด้วยหน้าต่างปัจจุบัน
+void LHWatch(WatchState &w2, const WatchState &w, const LHCtx &c, const ZCache &zc) {
+   w2 = w;
+   if(!c.active) return;
+   w2.active   = true;
+   w2.tier     = MathMax(c.tier, w.active ? w.tier : 0);
+   w2.max_tier = w2.tier;
+   w2.ext_px   = c.ext_px;
+   double zr, zs, fit, sig, mn, ssd;
+   bool   fl;
+   if(ZAtPrice(zc, c.ext_px, zr, zs, fit, sig, fl, mn, ssd)) { w2.ext_r = zr; w2.ext_s = zs; }
+}
+
+// ค่าของโหนด + เทียบกับยอดแรก (Z ของราคายอดแรกด้วยหน้าต่างเดียวกับโหนด, lower high = โหนดต่ำกว่ายอด) → เก็บลง ns ด้วย
 bool NodeMake(NodeRec &r, NodeSide &ns, const NodeFit &f, int dir, const WatchState &w, const ZCache &zc) {
    double zr, zs, fit, sig, mn, ssd;
    bool   fl;
@@ -935,7 +974,7 @@ bool NodeMake(NodeRec &r, NodeSide &ns, const NodeFit &f, int dir, const WatchSt
    r.d2    = g * 2.0 * f.c / ssd;
    r.r2    = f.r2;
    r.sd    = ssd;
-   r.ext_hi = ZHi(dir, w.ext_r, w.ext_s);
+   r.ext_hi = ZHi(dir, w.ext_r, w.ext_s);   // w = LHWatch (ยอดแรก)
    r.ext_px = w.ext_px;
    ns.zr = zr; ns.zs = zs; ns.ext_hi = r.ext_hi; ns.ext_px = r.ext_px;
    return true;
@@ -945,8 +984,11 @@ bool NodeMake(NodeRec &r, NodeSide &ns, const NodeFit &f, int dir, const WatchSt
 double NodeLowerHighZ(int dir, double ext_hi, double zr, double zs) { return ext_hi - ZHi(dir, zr, zs); }
 double NodeLowerHighPts(int dir, double ext_px, double px) { return PriceToPts((dir == -1) ? ext_px - px : px - ext_px); }
 
-// โหนดผ่านเกณฑ์โหมด LH: ยอดที่สอง (โหนด) ต่ำกว่ายอดแรกของการเฝ้า ≥ InpLH_MinZ
-bool NodeIsLH(const NodeRec &r) { return NodeLowerHighZ(r.dir, r.ext_hi, r.zr, r.zs) >= InpLH_MinZ; }
+// โหนดผ่านเกณฑ์โหมด LH: ยอดที่สองต่ำกว่ายอดแรก InpLH_MinZ - InpLH_MaxZ และ Z ที่ยอดที่สอง ≥ InpLH_NodeMinZ
+bool NodeIsLH(const NodeRec &r) {
+   double lh = NodeLowerHighZ(r.dir, r.ext_hi, r.zr, r.zs);
+   return lh >= InpLH_MinZ && lh <= InpLH_MaxZ && ZHi(r.dir, r.zr, r.zs) >= InpLH_NodeMinZ;
+}
 
 void NodeAppend(NodeRec &arr[], const NodeRec &r) {
    int n = ArraySize(arr);
@@ -957,15 +999,26 @@ void NodeAppend(NodeRec &arr[], const NodeRec &r) {
 // EA จริง: เรียกเมื่อมีวินาทีจบเพิ่ม (หลังอัปเดตการเฝ้า)
 void LiveNodeStep(datetime bar) {
    NodeFitCalc(g_lv_sb, InpNodeWindow_Sec, g_lv_fit);
-   NodeRec r;
-   if(NodeCheck(g_lv_ns_s, g_lv_fit, -1, g_wsell.active, bar) && NodeMake(r, g_lv_ns_s, g_lv_fit, -1, g_wsell, g_zc)) {
+   NodeRec    r;
+   WatchState ws, wb;
+   LHWatch(ws, g_wsell, g_lhc_s, g_zc);
+   LHWatch(wb, g_wbuy,  g_lhc_b, g_zc);
+   if(NodeCheck(g_lv_ns_s, g_lv_fit, -1, ws.active, bar) && NodeMake(r, g_lv_ns_s, g_lv_fit, -1, ws, g_zc)) {
       NodeAppend(g_nd_lv, r);
       g_lh_sig_s = NodeIsLH(r);
    }
-   if(NodeCheck(g_lv_ns_b, g_lv_fit,  1, g_wbuy.active,  bar) && NodeMake(r, g_lv_ns_b, g_lv_fit,  1, g_wbuy,  g_zc)) {
+   if(NodeCheck(g_lv_ns_b, g_lv_fit,  1, wb.active, bar) && NodeMake(r, g_lv_ns_b, g_lv_fit,  1, wb, g_zc)) {
       NodeAppend(g_nd_lv, r);
       g_lh_sig_b = NodeIsLH(r);
    }
+}
+
+// ยอดแรกของโหมด LH ที่รอโหนดอยู่ (Dashboard)
+string LHCtxText(const LHCtx &c, int dir) {
+   if(!g_lh_on || !c.active) return "";
+   return StringFormat(" | LH: ยอดแรก %s (%s) รอยอดที่สองต่ำกว่า %.2f-%.2f Z ถึงสิ้นแท่ง %s",
+                       DoubleToString(c.ext_px, _Digits), StageTag(c.tier), InpLH_MinZ, InpLH_MaxZ,
+                       TimeToString(c.bar + (datetime)(2 * PeriodSeconds(InpZ_Timeframe)), TIME_MINUTES));
 }
 
 // ข้อความโหนดล่าสุดของฝั่ง (Dashboard)
@@ -1182,9 +1235,8 @@ int OurPositionsTotal() {
 // 🎯 ยิงไม้ + กฎในแท่ง (EA จริง)
 //--------------------------------------------------------------------
 // ครบเวลาเฝ้าของระดับ (T2 5 วิ / T3 2 วิ / T4 ทันที) → ตัวกรอง → สวนกลับ (ติดตัวกรอง = ทิ้งสัญญาณ)
-void LiveFire(int dir, int ts, double bid, double ask) {
-   WatchState w;
-   if(dir == -1) w = g_wsell; else w = g_wbuy;
+void LiveFire(int dir, int ts, double bid, double ask, const WatchState &w_in) {
+   WatchState w = w_in;   // สำเนา (w_in อาจเป็นการเฝ้าที่ถูกล้างระหว่างยิง)
    string   side = (dir == -1) ? "SELL" : "BUY";
    int      tier = w.tier;
    datetime now  = ServerNow();
@@ -1204,6 +1256,8 @@ void LiveFire(int dir, int ts, double bid, double ask) {
                                    side, StageTag(tier), TierLot(tier), w.max_tier, w.ext_r, w.ext_s, g_z_reg, g_z_sma);
       WatchReset(g_wsell);
       WatchReset(g_wbuy);
+      g_lhc_s.active = false;
+      g_lhc_b.active = false;
    } else {
       g_next_try    = now + 1;   // กันยิงคำสั่งรัว ๆ เมื่อโบรกปฏิเสธ (ยังเฝ้าต่อ)
       g_last_status = side + " ส่งคำสั่งไม่สำเร็จ: " + trade.ResultRetcodeDescription();
@@ -1221,6 +1275,8 @@ void LiveSignalStep(long now_msc, int ts, double bid, double ask, bool update_wa
    datetime bar     = BarStartOf(now_t);
    GateSync(g_gs, bar);
    GateSync(g_gb, bar);
+   LHCtxStep(g_lhc_s, -1, g_wsell, bid, g_z_reg, g_z_sma, bar);   // ยอดแรกของโหมด LH (อยู่ต่อข้ามแท่ง / ช่วงห้าม)
+   LHCtxStep(g_lhc_b,  1, g_wbuy,  bid, g_z_reg, g_z_sma, bar);
 
    if(blocked || g_bar_changed) {
       WatchReset(g_wsell);
@@ -1237,13 +1293,14 @@ void LiveSignalStep(long now_msc, int ts, double bid, double ask, bool update_wa
    g_lh_sig_s = false;
    g_lh_sig_b = false;
    if(busy) return;
-   if(g_lh_on) {   // โหมด LH: ยิงตอนยืนยันโหนดที่ต่ำกว่ายอด (ไม่ใช้ตัวจับเวลา)
-      if(lh_s && g_wsell.active)     LiveFire(-1, ts, bid, ask);
-      else if(lh_b && g_wbuy.active) LiveFire( 1, ts, bid, ask);
+   if(g_lh_on) {   // โหมด LH: ยิงตอนยืนยันโหนดที่ต่ำกว่ายอดแรก (ไม่ใช้ตัวจับเวลา, ยอดแรกจากแท่งนี้หรือแท่งก่อน)
+      WatchState w2;
+      if(lh_s && g_lhc_s.active)      { LHWatch(w2, g_wsell, g_lhc_s, g_zc); LiveFire(-1, ts, bid, ask, w2); }
+      else if(lh_b && g_lhc_b.active) { LHWatch(w2, g_wbuy,  g_lhc_b, g_zc); LiveFire( 1, ts, bid, ask, w2); }
       return;
    }
-   if(WatchReady(g_wsell, now_msc))     LiveFire(-1, ts, bid, ask);
-   else if(WatchReady(g_wbuy, now_msc)) LiveFire( 1, ts, bid, ask);
+   if(WatchReady(g_wsell, now_msc))     LiveFire(-1, ts, bid, ask, g_wsell);
+   else if(WatchReady(g_wbuy, now_msc)) LiveFire( 1, ts, bid, ask, g_wbuy);
 }
 
 // ระดับ (T1-T4) จากคอมเมนต์ของดีลเปิด เช่น "7L-CNT T3 X3.25 R+3.1 S+2.4" (0 = อ่านไม่ได้)
@@ -2112,6 +2169,7 @@ NodeSide   g_rp_ns_s, g_rp_ns_b;
 NodeRec    g_nd_rp[];
 int        g_nd_rp_drawn  = 0;
 int        g_pt_from      = 0;       // ไม้แรกที่ยังติดตามต่ออยู่
+LHCtx      g_rp_lhc_s, g_rp_lhc_b;   // Replay: ยอดแรกของโหมด LH
 bool       g_rp_lh_s      = false;   // Replay: เพิ่งยืนยันโหนด LH ฝั่ง SELL / BUY
 bool       g_rp_lh_b      = false;
 int        g_rp_csv_pt    = -1;      // จำนวนไม้ที่ติดตามครบตอนเขียน CSV ล่าสุด
@@ -2137,6 +2195,7 @@ void ReplayReset() {
    g_nd_rp_drawn = 0;
    g_rp_lh_s     = false;
    g_rp_lh_b     = false;
+   ZeroMemory(g_rp_lhc_s); ZeroMemory(g_rp_lhc_b);
    g_pt_from     = 0;
    g_rp_csv_pt   = -1;
 }
@@ -2276,9 +2335,8 @@ void ReplayClose(long msc_out, double price, int reason) {
    else                  { GateOnClose(g_rp_gb, g_rt[i].stage, ext_z, b_out, sl_loss); WatchReset(g_rp_wb); }
 }
 
-void ReplayFire(int dir, long fire_msc) {
-   WatchState w;
-   if(dir == -1) w = g_rp_ws; else w = g_rp_wb;
+void ReplayFire(int dir, long fire_msc, const WatchState &w_in) {
+   WatchState w = w_in;   // สำเนา (ReplayOpen ล้างการเฝ้าก่อนบันทึกค่าสุดขั้ว)
    datetime t   = (datetime)(fire_msc / 1000);
    int      tier = w.tier;
    string   why = TimeBlockReason(t);
@@ -2292,6 +2350,8 @@ void ReplayFire(int dir, long fire_msc) {
       return;
    }
    int i = ReplayOpen(dir, tier, fire_msc, (dir == -1) ? g_rp_bid : g_rp_ask);
+   g_rp_lhc_s.active = false;
+   g_rp_lhc_b.active = false;
    g_rt[i].ext_r    = w.ext_r;
    g_rt[i].ext_s    = w.ext_s;
    g_rt[i].max_tier = w.max_tier;
@@ -2329,12 +2389,15 @@ void ReplayNodeFactors(int i, int dir) {
 // Replay: เรียกเมื่อมีวินาทีจบเพิ่ม (หลังอัปเดตการเฝ้า)
 void ReplayNodeStep(datetime bar) {
    NodeFitCalc(g_rp_sb, InpNodeWindow_Sec, g_rp_fit);
-   NodeRec r;
-   if(NodeCheck(g_rp_ns_s, g_rp_fit, -1, g_rp_ws.active, bar) && NodeMake(r, g_rp_ns_s, g_rp_fit, -1, g_rp_ws, g_rp_zc)) {
+   NodeRec    r;
+   WatchState ws, wb;
+   LHWatch(ws, g_rp_ws, g_rp_lhc_s, g_rp_zc);
+   LHWatch(wb, g_rp_wb, g_rp_lhc_b, g_rp_zc);
+   if(NodeCheck(g_rp_ns_s, g_rp_fit, -1, ws.active, bar) && NodeMake(r, g_rp_ns_s, g_rp_fit, -1, ws, g_rp_zc)) {
       NodeAppend(g_nd_rp, r);
       g_rp_lh_s = NodeIsLH(r);
    }
-   if(NodeCheck(g_rp_ns_b, g_rp_fit,  1, g_rp_wb.active, bar) && NodeMake(r, g_rp_ns_b, g_rp_fit,  1, g_rp_wb, g_rp_zc)) {
+   if(NodeCheck(g_rp_ns_b, g_rp_fit,  1, wb.active, bar) && NodeMake(r, g_rp_ns_b, g_rp_fit,  1, wb, g_rp_zc)) {
       NodeAppend(g_nd_rp, r);
       g_rp_lh_b = NodeIsLH(r);
    }
@@ -2437,8 +2500,8 @@ void ReplayTimeEvents(long msc) {
    }
    // ครบเวลาเฝ้า (ราคาของ tick ก่อนหน้า) → ยิง (โหมด LH ยิงตอนยืนยันโหนดแทน)
    if(g_lh_on) return;
-   if(WatchReady(g_rp_ws, msc))      ReplayFire(-1, MathMax(WatchDeadline(g_rp_ws), g_rp_msc));
-   else if(WatchReady(g_rp_wb, msc)) ReplayFire( 1, MathMax(WatchDeadline(g_rp_wb), g_rp_msc));
+   if(WatchReady(g_rp_ws, msc))      ReplayFire(-1, MathMax(WatchDeadline(g_rp_ws), g_rp_msc), g_rp_ws);
+   else if(WatchReady(g_rp_wb, msc)) ReplayFire( 1, MathMax(WatchDeadline(g_rp_wb), g_rp_msc), g_rp_wb);
 }
 
 // ไม้ที่ถืออยู่: SL / TP / คืนกำไร / โล่ ด้วยราคา tick ปัจจุบัน// ไม้ที่ถืออยู่: SL / TP / โล่ ด้วยราคา tick ปัจจุบัน
@@ -2484,8 +2547,9 @@ void ReplayTick(const MqlTick &tk) {
    if(SecFeed(g_rp_sb, msc, bid) && g_rp_have) {
       ReplayNodeStep(BarStartOf((datetime)(g_rp_msc / 1000)));
       if(g_lh_on && g_rt_open < 0) {
-         if(g_rp_lh_s && g_rp_ws.active)      ReplayFire(-1, g_rp_msc);
-         else if(g_rp_lh_b && g_rp_wb.active) ReplayFire( 1, g_rp_msc);
+         WatchState w2;
+         if(g_rp_lh_s && g_rp_lhc_s.active)      { LHWatch(w2, g_rp_ws, g_rp_lhc_s, g_rp_zc); ReplayFire(-1, g_rp_msc, w2); }
+         else if(g_rp_lh_b && g_rp_lhc_b.active) { LHWatch(w2, g_rp_wb, g_rp_lhc_b, g_rp_zc); ReplayFire( 1, g_rp_msc, w2); }
       }
       g_rp_lh_s = false;
       g_rp_lh_b = false;
@@ -2512,6 +2576,10 @@ void ReplayTick(const MqlTick &tk) {
       WatchUpdate(g_rp_wb,  1, zr, zs, msc, bid, ask, ZFloat( 1, g_rp_fz), g_rp_gb);
    }
    g_rp_bar_chg = false;
+   if(zok) {   // ยอดแรกของโหมด LH (อยู่ต่อข้ามแท่ง / ช่วงห้าม)
+      LHCtxStep(g_rp_lhc_s, -1, g_rp_ws, bid, zr, zs, BarStartOf(t));
+      LHCtxStep(g_rp_lhc_b,  1, g_rp_wb, bid, zr, zs, BarStartOf(t));
+   }
 
    g_rp_bid = bid; g_rp_ask = ask; g_rp_msc = msc;
    g_rp_have = true;
@@ -3071,7 +3139,7 @@ string WatchText(const WatchState &w, bool is_sell, long now_msc) {
                   : (w.tier == 3) ? StringFormat("Z ตัวใด > %s%.2f, รอ %d วิ", sg, InpT3_Z, InpT3_Sec)
                   : StringFormat("Z %s > %s%.2f, รอ %d วิ", (zf > InpT2EitherFloat ? "ตัวใด (ลอย > " + DoubleToString(InpT2EitherFloat, 1) + ")" : "ทั้งคู่"),
                                  sg, InpT2_Z, InpT2_Sec);
-      string fire = g_lh_on ? StringFormat("โหมด LH: ยิงเมื่อยืนยันโหนดที่ต่ำกว่ายอด ≥ %.2f Z", InpLH_MinZ)
+      string fire = g_lh_on ? StringFormat("โหมด LH: ยิงเมื่อยืนยันโหนดที่ต่ำกว่ายอดแรก %.2f-%.2f Z (Z โหนด ≥ %.1f)", InpLH_MinZ, InpLH_MaxZ, InpLH_NodeMinZ)
                             : StringFormat("ไม่มี %s ใหม่มา %.1f วิ → ยิงในอีก %.1f วิ", (is_sell ? "High" : "Low"), (double)(now_msc - w.last_new) / 1000.0, left);
       return StringFormat("👀 เฝ้า %s (%s, Lot %.2f) | สุดขั้ว R %+.2f / S %+.2f | SL ถ้ายิงตอนนี้ %s | %s%s%s",
                           StageTag(w.tier), need, TierLot(w.tier), w.ext_r, w.ext_s,
@@ -3140,7 +3208,7 @@ void UpdateDashboard(int ts, datetime now) {
    string news_str = NextNewsText(now);
 
    long   now_msc = MathMax(g_last_tick_msc, (long)now * 1000);
-   string msg = StringFormat("=== 📊 7-Lines Counter EA v12.90 (%s T2 ลอย>%.2f Z ทั้งคู่>%.1f %d วิ (ลอย>%.1f ตัวเดียวได้) | %s T3 Z ตัวใด>%.1f %d วิ | %s T4 >%.1f ทันที | SL High/Low แท่ง ± %.0f | คืนกำไร %.0f%%) ===\n",
+   string msg = StringFormat("=== 📊 7-Lines Counter EA v12.91 (%s T2 ลอย>%.2f Z ทั้งคู่>%.1f %d วิ (ลอย>%.1f ตัวเดียวได้) | %s T3 Z ตัวใด>%.1f %d วิ | %s T4 >%.1f ทันที | SL High/Low แท่ง ± %.0f | คืนกำไร %.0f%%) ===\n",
                              (g_en[2] ? "✅" : "⛔"), InpFloatMin, InpT2_Z, InpT2_Sec, InpT2EitherFloat, (g_en[3] ? "✅" : "⛔"), InpT3_Z, InpT3_Sec,
                              (g_en[4] ? "✅" : "⛔"), InpT4_Z, InpSLPeak_Pts, InpGiveback_Pct);
    msg += StringFormat("Z (%s, %d) : %s\n", EnumToString(InpZ_Timeframe), InpZ_Period, z_str);
@@ -3149,8 +3217,8 @@ void UpdateDashboard(int ts, datetime now) {
       msg += StringFormat("ระยะจาก SMA : Z_float %+.2f (ราคาเปิด %s vs SMA ตอนเปิดแท่ง %s) | Z_gap (ถดถอย − SMA) %+.2f\n",
                           g_bar0_fz, DoubleToString(g_bar0_open, _Digits), DoubleToString(g_bar0_fsma, _Digits),
                           ZFromSMA(-1, g_center, g_sma_mean, g_sma_sd));
-   msg += "SELL : " + WatchText(g_wsell, true,  now_msc) + NodeStatusText(g_lv_ns_s, BarStartOf(now), now_msc) + "\n";
-   msg += "BUY  : " + WatchText(g_wbuy,  false, now_msc) + NodeStatusText(g_lv_ns_b, BarStartOf(now), now_msc) + "\n";
+   msg += "SELL : " + WatchText(g_wsell, true,  now_msc) + NodeStatusText(g_lv_ns_s, BarStartOf(now), now_msc) + LHCtxText(g_lhc_s, -1) + "\n";
+   msg += "BUY  : " + WatchText(g_wbuy,  false, now_msc) + NodeStatusText(g_lv_ns_b, BarStartOf(now), now_msc) + LHCtxText(g_lhc_b,  1) + "\n";
    msg += StringFormat("ออเดอร์ : BUY %d / SELL %d | สเปรด %.0f / %.0f จุด\n",
                        buys, sells, PriceToPts(ask - bid), InpMaxSpread_Pts);
    msg += StringFormat("กฎในแท่ง : SELL %s | BUY %s\n", (g_gs.bar == BarStartOf(now) ? GateText(g_gs) : "ปกติ"), (g_gb.bar == BarStartOf(now) ? GateText(g_gb) : "ปกติ"));
@@ -3221,8 +3289,8 @@ void DrawTierButtons() {
    ObjectSetInteger(0, BTN_LH, OBJPROP_COLOR, clrWhite);
    ObjectSetInteger(0, BTN_LH, OBJPROP_BGCOLOR, g_lh_on ? clrDarkOrange : clrDimGray);
    ObjectSetInteger(0, BTN_LH, OBJPROP_STATE, false);
-   ObjectSetString(0,  BTN_LH, OBJPROP_TOOLTIP, StringFormat("คลิกเพื่อ%sโหมด LH: ยิงเมื่อยืนยันโหนดที่ยอดที่สองต่ำกว่ายอดแรก ≥ %.2f Z แทนตัวจับเวลา (Tick Replay จะเล่นซ้ำใหม่)",
-                                                       (g_lh_on ? "ปิด" : "เปิด"), InpLH_MinZ));
+   ObjectSetString(0,  BTN_LH, OBJPROP_TOOLTIP, StringFormat("คลิกเพื่อ%sโหมด LH: ยิงเมื่อยืนยันโหนดที่ยอดที่สองต่ำกว่ายอดแรก %.2f-%.2f Z (Z โหนด ≥ %.1f, แท่งเดียวกันหรือแท่งถัดไป) แทนตัวจับเวลา (Tick Replay จะเล่นซ้ำใหม่)",
+                                                       (g_lh_on ? "ปิด" : "เปิด"), InpLH_MinZ, InpLH_MaxZ, InpLH_NodeMinZ));
    for(int t = 2; t <= 4; t++) {
       string nm = BTN_PREFIX + IntegerToString(t);
       if(ObjectFind(0, nm) < 0) {
@@ -3253,6 +3321,8 @@ void ToggleLH() {
    WatchReset(g_wbuy);
    g_lh_sig_s = false;
    g_lh_sig_b = false;
+   g_lhc_s.active = false;
+   g_lhc_b.active = false;
    ObjectsDeleteAll(0, OBJ_PREFIX + "RP_");
    ReplayReset();
    g_lay_sig     = "";
@@ -3411,11 +3481,12 @@ int OnInit() {
       Print("❌ ค่าโหนดไม่ถูกต้อง (หน้าต่าง 5-60 วิ, R² 0-1, ผ่านยอดแล้ว < หน้าต่าง)");
       return(INIT_PARAMETERS_INCORRECT);
    }
-   if(InpLH_MinZ < 0.0) { Print("❌ InpLH_MinZ ต้องไม่ติดลบ"); return(INIT_PARAMETERS_INCORRECT); }
+   if(InpLH_MinZ < 0.0 || InpLH_MaxZ < InpLH_MinZ) { Print("❌ ช่วงยอดที่ต่ำลงของโหมด LH ไม่ถูกต้อง (0 ≤ ต่ำสุด ≤ สูงสุด)"); return(INIT_PARAMETERS_INCORRECT); }
    if(InpPostTrack_Min < 1 || InpPostTrack_Min > 1440) { Print("❌ InpPostTrack_Min ต้องอยู่ระหว่าง 1-1440"); return(INIT_PARAMETERS_INCORRECT); }
    SecReset(g_lv_sb);
    g_lv_fit.ok = false;
    ZeroMemory(g_lv_ns_s); ZeroMemory(g_lv_ns_b);
+   ZeroMemory(g_lhc_s); ZeroMemory(g_lhc_b);
    ArrayResize(g_nd_lv, 0);
    g_nd_lv_drawn = 0;
    if(InpTP_Pts <= 0.0 || InpSLPeak_Pts < 0.0 || InpTrailDist_Pts <= 0.0 || InpTrailInterval_Sec < 1) {
