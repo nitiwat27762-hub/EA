@@ -46,7 +46,7 @@
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "14.00"
+#property version     "14.01"
 #property description "สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว สำหรับ XAUUSD (บัญชี Hedging)"
 
 #include <Trade\Trade.mqh>
@@ -2486,9 +2486,8 @@ string PositionLines(double bid, double ask, datetime now) {
       double   prof   = is_buy ? PriceToPts(bid - open) : PriceToPts(open - ask);
       double   locked = (sl > 0.0) ? (is_buy ? PriceToPts(sl - open) : PriceToPts(open - sl)) : 0.0;
 
-      string st;
       double   peak   = PriceToPts(PeakOf(ticket));
-      string st;
+      string   st;
       if(IsActivated(ticket))
          st = StringFormat("🔥 ไล่จี้ ล็อก %+.0f", locked);
       else if(locked > 0.0)
@@ -2518,7 +2517,7 @@ void UpdateDashboard(int ts, datetime now) {
    string news_str = NextNewsText(now);
 
    long   now_msc = MathMax(g_last_tick_msc, (long)now * 1000);
-   string msg = StringFormat("=== 📊 7-Lines Counter EA v14.00 (%s T2 ลอย>%.2f Z ทั้งคู่>%.1f %d วิ (ลอย>%.1f ตัวเดียวได้) | %s T3 Z ตัวใด>%.1f %d วิ | %s T4 >%.1f ทันที | SL High/Low แท่ง ± %.0f | เกราะ %.0f→+%.0f / %.0f→+%.0f) ===\n",
+   string msg = StringFormat("=== 📊 7-Lines Counter EA v14.01 (%s T2 ลอย>%.2f Z ทั้งคู่>%.1f %d วิ (ลอย>%.1f ตัวเดียวได้) | %s T3 Z ตัวใด>%.1f %d วิ | %s T4 >%.1f ทันที | SL High/Low แท่ง ± %.0f | เกราะ %.0f→+%.0f / %.0f→+%.0f) ===\n",
                              (g_en[2] ? "✅" : "⛔"), InpFloatMin, InpT2_Z, InpT2_Sec, InpT2EitherFloat, (g_en[3] ? "✅" : "⛔"), InpT3_Z, InpT3_Sec,
                              (g_en[4] ? "✅" : "⛔"), InpT4_Z, InpSLPeak_Pts, InpLock1_Trigger_Pts, InpLock1_Pts, InpLock2_Trigger_Pts, InpLock2_Pts);
    msg += StringFormat("Z (%s, %d) : %s\n", EnumToString(InpZ_Timeframe), InpZ_Period, z_str);

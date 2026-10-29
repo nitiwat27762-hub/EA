@@ -109,7 +109,10 @@ indicator EA XAUUSD
 
 | ไฟล์ | เวอร์ชัน | รายละเอียด |
 |---|---|---|
-| `Experts/Seven_Lines_Counter_EA.mq5` | 14.00 | EA สวนกลับค่า Z สุดขั้ว T2 / T3 / T4 + เกราะกันเหนี่ยว 2 ขั้น + ความเร็ว Z บนแท่ง (XAUUSD, บัญชี Hedging) |
+| `Experts/Seven_Lines_Counter_EA.mq5` | 14.01 | EA สวนกลับค่า Z สุดขั้ว T2 / T3 / T4 + เกราะกันเหนี่ยว 2 ขั้น + ความเร็ว Z บนแท่ง (XAUUSD, บัญชี Hedging) |
+
+### Counter EA v14.01 — แก้ compile error
+- `PositionLines` ประกาศตัวแปร `st` ซ้ำ 2 ครั้ง → ลบตัวที่ซ้ำออก (ตรรกะเทรดไม่เปลี่ยน)
 
 ### Counter EA v14.00 — รื้อใหม่จากฐาน v12.60 เหลือเฉพาะแกนหลัก
 - ✅ **เก็บไว้**
