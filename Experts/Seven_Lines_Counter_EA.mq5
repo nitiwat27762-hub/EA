@@ -36,6 +36,7 @@
 //  • แท่งสด = เวลาจริงจาก tick ที่ EA เห็น, แท่งย้อนหลัง = จาก tick ของ Tick Replay (เก่ากว่านั้นมีแค่ค่าจาก OHLC)
 //  • ป้ายบนแท่ง 2 แถว + จัดตำแหน่งไม่ให้ซ้อน (ไม่มีที่ = ซ่อน) | ชี้เมาส์ที่แท่ง = กล่องรายละเอียดมุมซ้ายล่าง
 //  • Tick Replay: CSV แท่ง (MQL5/Files/7LCEA_Bars_<symbol>.csv) ทุกแท่งที่ Z ≥ 2.0 + ผล 60 นาทีหลังยอด (สวนกลับ 2σ / พุ่งต่อ +500)
+//  • TF ใหญ่ (v14.20, ค่าเริ่มต้น M30): แท่งที่ Z ถึง T2-T4 ตามกฎเดียวกับ EA → กรอบเส้นประ + ป้าย "M30 T3" (สี T2 เหลือง / T3 ส้ม / T4 แดง)
 //
 // 🧪 Tick Replay (บนกราฟ, ไม่ใช่ Strategy Tester)
 //  • เล่นซ้ำ tick จริงย้อนหลังด้วยกติกาเดียวกับ EA → มาร์กบนกราฟ + สรุปบน Dashboard
@@ -50,7 +51,7 @@
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "14.10"
+#property version     "14.20"
 #property description "สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว สำหรับ XAUUSD (บัญชี Hedging)"
 
 #include <Trade\Trade.mqh>
@@ -120,6 +121,8 @@ input double          InpZoneZ             = 2.00;       // เวลาค้�
 input int             InpK2_Window_Sec     = 60;         // K2: นับครั้งที่ทำยอดใหม่ของแท่ง ภายในกี่วินาทีก่อนยอดล่าสุด
 input bool            InpShowBarPanel      = true;       // กล่องรายละเอียดแท่ง (ชี้เมาส์ที่แท่ง → ค่าทั้งหมด, มุมซ้ายล่าง)
 input int             InpPanelFontSize     = 9;          // ขนาดตัวอักษรกล่องรายละเอียดแท่ง
+input bool            InpShowHTF           = true;       // แสดงกรอบแท่ง TF ใหญ่ (InpHTF) ที่ Z ถึง T2-T4 (กฎเดียวกับ EA + ปุ่ม T2-T4)
+input ENUM_TIMEFRAMES InpHTF               = PERIOD_M30; // TF ใหญ่ที่ตรวจ T2-T4 (ต้องใหญ่กว่าและหารลงตัวด้วย TF ของ Z)
 input bool            InpBarCSV            = true;       // Tick Replay: บันทึกทุกแท่งที่ Z ≥ InpZoneZ + ผลสวนกลับ / พุ่งต่อ ลง CSV แท่ง
 input int             InpOutcomeMin        = 60;         // CSV แท่ง: ดูผลภายในกี่นาทีหลังยอดของแท่ง
 input double          InpOutcomeSigma      = 2.00;       // CSV แท่ง: ราคาถอยจากยอดกี่ σ (SD20) = สวนกลับ (ทะลุยอด + InpSLPeak_Pts = พุ่งต่อ)
@@ -148,6 +151,9 @@ input color           InpClrBarZBuy        = clrDeepSkyBlue;    // ป้าย 
 input color           InpClrBarZOther      = clrGray;           // ป้าย Z บนแท่ง: ถึงเกณฑ์ไม่ครบตามเงื่อนไขเข้าไม้
 input color           InpClrFloatMark      = clrMediumPurple;   // ป้าย Z_float (แท่งลอยพ้น SMA)
 input color           InpClrBarZInfo       = clrKhaki;          // ป้ายบนแท่งแถวที่ 2: เร็ว / ค้าง / K2 / แท่งติดกัน
+input color           InpClrHTF2           = clrYellow;         // กรอบ TF ใหญ่: ถึง T2
+input color           InpClrHTF3           = clrOrange;         // กรอบ TF ใหญ่: ถึง T3
+input color           InpClrHTF4           = clrRed;            // กรอบ TF ใหญ่: ถึง T4
 input color           InpClrPanelBg        = C'20,24,32';       // กล่องรายละเอียดแท่ง: พื้นหลัง
 input color           InpClrPanelText      = clrGainsboro;      // กล่องรายละเอียดแท่ง: ตัวอักษร
 input color           InpClrPanelHead      = clrGold;           // กล่องรายละเอียดแท่ง: หัวข้อ
@@ -320,6 +326,8 @@ int        g_lbl_ver        = 0;       // ป้ายบนแท่งเป�
 datetime   g_pn_bar         = 0;       // แท่งที่กล่องรายละเอียดแสดงอยู่ (0 = แท่งปัจจุบัน)
 int        g_pn_side        = -1;      // ฝั่งที่เมาส์ชี้ (−1 = เลือกฝั่งที่ Z สูงกว่า)
 string     g_pn_text        = "";
+bool       g_htf_ok         = false;   // InpHTF ใช้ได้ (ใหญ่กว่าและหารลงตัวด้วย TF ของ Z)
+datetime   g_htf_bar        = 0;       // แท่ง TF ใหญ่ปัจจุบันตอนอัปเดตกรอบล่าสุด (0 = วาดใหม่ทั้งชุด)
 bool       g_en[5];                    // เปิดใช้ระดับ T2-T4 (ปุ่มบนกราฟ, index = ระดับ)
 string     g_lay_sig        = "";      // สถานะกราฟตอนจัดป้ายไม้ล่าสุด
 bool       g_bar_changed    = false;   // ขึ้นแท่งใหม่ (TF ของ Z) → ล้างการเฝ้า
@@ -1640,6 +1648,111 @@ void UpdateBarZLabels() {
 }
 
 //====================================================================
+// 🟨 TF ใหญ่ (InpHTF, ค่าเริ่มต้น M30): แท่งที่ Z ถึง T2-T4 ตามกฎเดียวกับ EA (รวมแท่งลอย + ปุ่ม T2-T4)
+//   Z ของแท่ง TF ใหญ่ที่ High (SELL) / Low (BUY) จากราคาปิด 19 แท่ง TF ใหญ่ก่อนหน้า → กรอบเส้นประ + ป้าย "M30 T3"
+//   แท่งที่กำลังเดิน: แสดงทันทีที่แตะ (High / Low ขยายได้ทางเดียว → ระดับขึ้นได้อย่างเดียว)
+//====================================================================
+string HTFName() { return StringSubstr(EnumToString(InpHTF), 7); }
+
+color HTFColor(int tier) {
+   if(tier >= 4) return InpClrHTF4;
+   if(tier == 3) return InpClrHTF3;
+   return InpClrHTF2;
+}
+
+// ระดับของแท่ง TF ใหญ่ j ที่ราคา px ฝั่ง side (c = ราคาปิด TF ใหญ่, open = ราคาเปิดแท่ง) → zr / zs ที่ราคานั้น
+int HTFTierOf(const double &c[], int j, double open, double px, int side, double &zr, double &zs) {
+   zr = 0.0; zs = 0.0;
+   if(!ZForBarPrice(c, j, px, zr, zs)) return 0;
+   double sma = 0.0, sd = 0.0;
+   double fz  = SmaSdAt(c, j, open, sma, sd) ? (open - sma) / sd : 0.0;
+   int    dir = (side == 0) ? -1 : 1;
+   return TierOf(dir, zr, zs, ZFloat(dir, fz));
+}
+
+// ระดับของแท่ง TF ใหญ่ที่ครอบเวลา t ทั้งแท่ง (แท่งที่กำลังเดิน = ถึงตอนนี้) — ใช้แสดงผล
+int HTFTierAt(datetime t, int side, double &zr, double &zs, datetime &hbar) {
+   zr = 0.0; zs = 0.0; hbar = 0;
+   if(!g_htf_ok) return 0;
+   int sh = iBarShift(_Symbol, InpHTF, t, false);
+   if(sh < 0) return 0;
+   MqlRates r[];
+   int got = CopyRates(_Symbol, InpHTF, sh, InpZ_Period + 1, r);
+   if(got < InpZ_Period + 1) return 0;
+   double c[];
+   ArrayResize(c, got);
+   for(int i = 0; i < got; i++) c[i] = r[i].close;
+   int j = got - 1;
+   hbar = r[j].time;
+   return HTFTierOf(c, j, r[j].open, (side == 0) ? r[j].high : r[j].low, side, zr, zs);
+}
+
+// วาด / ลบกรอบ + ป้ายของแท่ง TF ใหญ่ j
+void DrawHTFMark(const MqlRates &r[], const double &c[], int j) {
+   double zru, zsu, zrd, zsd;
+   int    tu = HTFTierOf(c, j, r[j].open, r[j].high, 0, zru, zsu);
+   int    td = HTFTierOf(c, j, r[j].open, r[j].low,  1, zrd, zsd);
+   string ts = IntegerToString((long)r[j].time);
+   string nr = OBJ_PREFIX + "HT_R_" + ts, nu = OBJ_PREFIX + "HT_U_" + ts, nd = OBJ_PREFIX + "HT_D_" + ts;
+   int    tm = MathMax(tu, td);
+   if(tm == 0) { DeleteLabel(nr); DeleteLabel(nu); DeleteLabel(nd); return; }
+
+   long     per  = PeriodSeconds(InpHTF);
+   datetime t1   = r[j].time + (datetime)per;
+   datetime tmid = r[j].time + (datetime)(per / 2);
+   string   tip  = StringFormat("%s %s | SELL (ที่ High): %s Z_reg %+.2f / Z_SMA %+.2f | BUY (ที่ Low): %s Z_reg %+.2f / Z_SMA %+.2f",
+                                HTFName(), TimeToString(r[j].time, TIME_DATE|TIME_MINUTES),
+                                (tu > 0 ? StageTag(tu) : "ไม่ถึง"), zru, zsu, (td > 0 ? StageTag(td) : "ไม่ถึง"), zrd, zsd);
+   if(ObjectFind(0, nr) < 0) {
+      ObjectCreate(0, nr, OBJ_RECTANGLE, 0, r[j].time, r[j].high, t1, r[j].low);
+      ObjectSetInteger(0, nr, OBJPROP_STYLE, STYLE_DOT);
+      ObjectSetInteger(0, nr, OBJPROP_WIDTH, 1);
+      ObjectSetInteger(0, nr, OBJPROP_FILL, false);
+      ObjectSetInteger(0, nr, OBJPROP_BACK, true);
+      ObjectSetInteger(0, nr, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, nr, OBJPROP_HIDDEN, true);
+      RememberBarZLabel(nr, r[j].time);
+   }
+   ObjectMove(0, nr, 0, r[j].time, r[j].high);
+   ObjectMove(0, nr, 1, t1, r[j].low);
+   ObjectSetInteger(0, nr, OBJPROP_COLOR, HTFColor(tm));
+   ObjectSetString(0,  nr, OBJPROP_TOOLTIP, tip);
+
+   double off = PtsToPrice(InpBarZOffset_Pts);
+   if(tu > 0) {
+      EnsureBarText(nu, tmid, r[j].high + off, true, HTFColor(tu), true);
+      SetLabelText(nu, HTFName() + " " + StageTag(tu));
+      ObjectSetString(0, nu, OBJPROP_TOOLTIP, tip);
+   }
+   else DeleteLabel(nu);
+   if(td > 0) {
+      EnsureBarText(nd, tmid, r[j].low - off, false, HTFColor(td), true);
+      SetLabelText(nd, HTFName() + " " + StageTag(td));
+      ObjectSetString(0, nd, OBJPROP_TOOLTIP, tip);
+   }
+   else DeleteLabel(nd);
+}
+
+// เรียกทุก 1 วินาที: ครั้งแรก = ย้อนหลังเท่าช่วงป้าย Z, ขึ้นแท่งใหม่ = แท่งที่เพิ่งปิด + แท่งใหม่, ปกติ = แท่งที่กำลังเดิน
+void UpdateHTFMarks() {
+   if(!g_draw || !InpShowHTF || !g_htf_ok) return;
+   datetime h0 = iTime(_Symbol, InpHTF, 0);
+   if(h0 == 0) return;
+   int need = 1;
+   if(g_htf_bar == 0)
+      need = (int)MathMin(5000, MathMax(10, (long)InpBarZBars * PeriodSeconds(InpZ_Timeframe) / PeriodSeconds(InpHTF) + 1));
+   else if(h0 != g_htf_bar) need = 2;
+   MqlRates r[];
+   int got = CopyRates(_Symbol, InpHTF, 0, need + InpZ_Period, r);
+   if(got < InpZ_Period + 1) return;
+   double c[];
+   ArrayResize(c, got);
+   for(int i = 0; i < got; i++) c[i] = r[i].close;
+   for(int j = MathMax(InpZ_Period - 1, got - need); j < got; j++) DrawHTFMark(r, c, j);
+   g_htf_bar = h0;
+}
+
+//====================================================================
 // 📍 มาร์กจุดเปิดไม้ + ระยะห่างถึงปลายไส้เทียน (TF ของ Z)
 //====================================================================
 struct EntryMark {
@@ -1820,6 +1933,8 @@ struct RTrade {
    long     zone_run;                     // ค้าง Z ≥ InpZoneZ ต่อเนื่องจนถึงตอนยิง (วินาที, ข้ามแท่งได้)
    int      prev_pk, prev_cl;             // แท่งก่อนหน้าติดกันที่ยอด Z / Z ปิดแท่ง ≥ InpZoneZ
    double   zb[6];                        // Z ของแท่งจนถึงตอนยิง: Z_reg เปิด / สูง / ต่ำ, Z_SMA เปิด / สูง / ต่ำ
+   int      htf_tier;                     // ระดับของแท่ง TF ใหญ่ (ฝั่งการกระชาก) ณ ตอนยิง (0 = ไม่ถึง)
+   double   htf_zr, htf_zs;               // Z ของแท่ง TF ใหญ่ที่ยอดจนถึงตอนยิง
    int      lock_lv;                      // ขั้นเกราะกันเหนี่ยวที่ทำแล้ว (0-2)
    // ระยะกำไรระหว่างถือ (ราคา): ต่ำสุด = mae, สูงสุด = mfe, เฉลี่ยถ่วงตามเวลา = pa_sum / pa_ms
    double   pa_sum, pa_ms, pa_fav;
@@ -1860,6 +1975,8 @@ struct BarRec {
    long     res_msc;
    double   max_rev;       // ถอยจากยอดไกลสุด (σ)
    double   max_cont;      // ทะลุยอดไกลสุด (จุด)
+   int      htf_tier;      // ระดับของแท่ง TF ใหญ่ ณ ตอนปิดแท่งนี้ (ไม่มองอนาคต)
+   double   htf_zr, htf_zs;
 };
 
 RTrade     g_rt[];
@@ -1868,6 +1985,8 @@ BarRec     g_bo[];
 int        g_bo_first     = 0;       // แท่งแรกที่ยังรอผล
 int        g_bo_csv_rows  = -1;
 double     g_rrc[];                  // ราคาปิดของ g_rr (สำหรับ Z ที่ราคาใดๆ ของแท่ง)
+MqlRates   g_rh[];                   // แท่ง TF ใหญ่ของช่วง Replay
+double     g_rhc[];
 int        g_rt_open      = -1;
 int        g_rb_drawn     = 0;
 
@@ -1893,6 +2012,10 @@ bool       g_rp_init      = false;
 bool       g_rp_caught    = false;
 long       g_rp_cursor    = 0;
 int        g_rp_retry     = 0;
+long       g_rp_fail_cur  = -1;      // ช่วงที่กำลังดึง tick ไม่สำเร็จ (cursor) / เริ่มไม่สำเร็จเมื่อ (GetTickCount)
+uint       g_rp_fail_ms   = 0;
+int        g_rp_skip_n    = 0;       // จำนวนช่วงที่ข้ามเพราะดึง tick ไม่สำเร็จเกิน RP_SKIP_SEC
+string     g_rp_skip_txt  = "";
 long       g_rp_ticks     = 0;
 string     g_rp_status    = "ยังไม่เริ่ม";
 double     g_contract     = 100.0;
@@ -1912,6 +2035,7 @@ void ReplayReset() {
    g_rp_bid = 0.0; g_rp_ask = 0.0; g_rp_zr = 0.0; g_rp_zs = 0.0;
    g_rp_msc = 0; g_rp_have = false; g_rp_init = false; g_rp_caught = false;
    g_rp_cursor = 0; g_rp_retry = 0; g_rp_ticks = 0;
+   g_rp_fail_cur = -1; g_rp_fail_ms = 0; g_rp_skip_n = 0; g_rp_skip_txt = "";
    g_rp_status = "ยังไม่เริ่ม";
 }
 
@@ -1922,7 +2046,32 @@ bool ReplayLoadRates() {
    if(got <= InpZ_Period + 3) return false;
    ArrayResize(g_rrc, got);
    for(int i = 0; i < got; i++) g_rrc[i] = g_rr[i].close;
+   if(g_htf_ok) {   // TF ใหญ่ (โหลดไม่ได้ = ค่า TF ใหญ่ใน CSV เป็น 0)
+      int hc = (int)((InpReplayDays + 4) * DAY_SEC / PeriodSeconds(InpHTF)) + InpZ_Period + 10;
+      int gh = CopyRates(_Symbol, InpHTF, 0, hc, g_rh);
+      ArrayResize(g_rhc, MathMax(gh, 0));
+      for(int i = 0; i < gh; i++) g_rhc[i] = g_rh[i].close;
+   }
    return true;
+}
+
+// ระดับของแท่ง TF ใหญ่ที่ครอบแท่ง g_rr[jb] ณ เวลาที่แท่ง jb มี High / Low = hi_now / lo_now
+//   ยอดของแท่ง TF ใหญ่ = แท่ง TF ของ Z ก่อนหน้าในแท่ง TF ใหญ่เดียวกัน + แท่ง jb (ไม่มองอนาคต)
+int ReplayHTFTier(int side, int jb, double hi_now, double lo_now, double &zr, double &zs) {
+   zr = 0.0; zs = 0.0;
+   int nh = ArraySize(g_rh);
+   if(!g_htf_ok || nh == 0 || jb < 0) return 0;
+   datetime t = g_rr[jb].time;
+   int lo = 0, hi = nh - 1, jh = -1;
+   while(lo <= hi) {   // แท่ง TF ใหญ่สุดท้ายที่เริ่มไม่เกิน t
+      int mid = (lo + hi) / 2;
+      if(g_rh[mid].time <= t) { jh = mid; lo = mid + 1; } else hi = mid - 1;
+   }
+   if(jh < InpZ_Period - 1) return 0;
+   datetime hs = g_rh[jh].time;
+   double   hh = hi_now, ll = lo_now;
+   for(int q = jb - 1; q >= 0 && g_rr[q].time >= hs; q--) { hh = MathMax(hh, g_rr[q].high); ll = MathMin(ll, g_rr[q].low); }
+   return HTFTierOf(g_rhc, jh, g_rh[jh].open, (side == 0) ? hh : ll, side, zr, zs);
 }
 
 // เข้าแท่งใหม่ (TF ของ Z): สร้างแคช Z
@@ -2014,6 +2163,7 @@ int ReplayOpen(int dir, int stage, long msc, double price) {
          if(ZAtPrice(g_rp_zc, px[q], zr, zs, fit, sig, fl, mn, ssd)) { g_rt[i].zb[q] = zr; g_rt[i].zb[q + 3] = zs; }
       }
    }
+   g_rt[i].htf_tier = ReplayHTFTier(side, g_rp_b, hi, lo, g_rt[i].htf_zr, g_rt[i].htf_zs);
    g_rt[i].lock_lv = 0;
    g_rt[i].pa_sum = 0.0; g_rt[i].pa_ms = 0.0; g_rt[i].pa_fav = 0.0; g_rt[i].pa_msc = msc;
    g_rt[i].activated      = false;
@@ -2236,6 +2386,7 @@ void ReplayBarClosed() {
       double g = (s == 0) ? 1.0 : -1.0;
       g_bo[k].max_rev  = (cb.sd[s].ext_sd > 0.0) ? g * (cb.sd[s].ext_px - cb.sd[s].back_px) / cb.sd[s].ext_sd : 0.0;
       g_bo[k].max_cont = 0.0;
+      g_bo[k].htf_tier = ReplayHTFTier(s, jb, g_rr[jb].high, g_rr[jb].low, g_bo[k].htf_zr, g_bo[k].htf_zs);
       g_bo[k].result   = (cb.sd[s].rev_msc > 0) ? BO_REV : BO_WAIT;   // ถอยถึงเกณฑ์ตั้งแต่ในแท่ง
       g_bo[k].res_msc  = cb.sd[s].rev_msc;
    }
@@ -2414,6 +2565,9 @@ void DrawReplayTrade(int i) {
                               InpSpeedFromZ, SpeedLong(g_rt[i].ss.sp[2]), InpZoneZ, ShortSec(g_rt[i].zone_run),
                               ShortSec(g_rt[i].ss.zone_cum_ms / 1000), g_rt[i].ss.k2);
    tipText += StringFormat("\nแท่งก่อนหน้าติดกัน: ยอด Z ≥ %.1f %d แท่ง / ปิด ≥ %.1f %d แท่ง", InpZoneZ, g_rt[i].prev_pk, InpZoneZ, g_rt[i].prev_cl);
+   if(g_htf_ok)
+      tipText += StringFormat(" | %s ณ ตอนยิง: %s (Z_reg %+.2f / Z_SMA %+.2f)", HTFName(),
+                              (g_rt[i].htf_tier > 0 ? StageTag(g_rt[i].htf_tier) : "ไม่ถึง"), g_rt[i].htf_zr, g_rt[i].htf_zs);
    if(g_rt[i].lock_lv > 0) tipText += StringFormat("\nเกราะกันเหนี่ยวถึงขั้น %d", g_rt[i].lock_lv);
    ObjectSetString(0, na, OBJPROP_TOOLTIP, tipText);
    ObjectSetString(0, nt, OBJPROP_TOOLTIP, tipText);
@@ -2474,6 +2628,7 @@ string ReplayStatsText() {
                            c_tp, c_sl, c_lk, c_tr, c_wk, ArraySize(g_rb));
    string tail = "";
    if(g_rt_open >= 0) tail = " | มีไม้จำลองถืออยู่";
+   if(g_rp_skip_n > 0) tail += StringFormat(" | ⚠️ ข้ามช่วงที่ดึง tick ไม่ได้ %d ช่วง (ล่าสุด %s)", g_rp_skip_n, g_rp_skip_txt);
    s += StringFormat("\n   T2 %d ไม้ ($%+.2f) | T3 %d ไม้ ($%+.2f) | T4 %d ไม้ ($%+.2f)%s",
                      cnt[2], usd_st[2], cnt[3], usd_st[3], cnt[4], usd_st[4], tail);
    if(n > 0) {   // ระยะกำไรระหว่างถือ เฉลี่ยต่อไม้
@@ -2516,6 +2671,8 @@ string SignalFactorText(int i) {
    s += g_rt[i].e_ok ? StringFormat(" | E tick %.1f/วิ เทียบ %.1f/วิ", g_rt[i].e_r15, g_rt[i].e_r60) : " | E -";
    return s;
 }
+
+const int RP_SKIP_SEC = 30;   // ดึง tick ช่วงหนึ่งไม่สำเร็จนานเกินนี้ → ข้ามช่วงนั้น
 
 string ReplayCSVName() { return "7LCEA_Replay_" + _Symbol + ".csv"; }
 
@@ -2561,7 +2718,7 @@ void ReplayWriteCSV(int done) {
                       "spd_zreg_t2_sec,spd_zreg_t3_sec,spd_zreg_t4_sec,spd_zreg_from_open,spd_zsma_t2_sec,spd_zsma_t3_sec,spd_zsma_t4_sec,spd_zsma_from_open," +
                       "spd_any_t2_sec,spd_any_t3_sec,spd_any_t4_sec,spd_any_from_open,spd_any_rate_t2," +
                       "zone_run_sec,zone_cum_sec,zone_max_sec,prev_bars_peak_zone,prev_bars_close_zone,k2,k2_max," +
-                      "zreg_bar_open,zreg_bar_high,zreg_bar_low,zsma_bar_open,zsma_bar_high,zsma_bar_low," +
+                      "zreg_bar_open,zreg_bar_high,zreg_bar_low,zsma_bar_open,zsma_bar_high,zsma_bar_low,htf_tier,htf_zreg,htf_zsma," +
                       "time_out,exit,lock_level,hold_sec,pnl_pts,usd,profit_min_pts,profit_max_pts,profit_avg_pts\r\n");
    for(int i = 0; i < ArraySize(g_rt); i++) {
       if(g_rt[i].reason == RX_OPEN) continue;
@@ -2586,6 +2743,7 @@ void ReplayWriteCSV(int done) {
             StringFormat("%d,%d,", g_rt[i].prev_pk, g_rt[i].prev_cl) +
             CsvNum(so, g_rt[i].ss.k2, 0) + "," + CsvNum(so, g_rt[i].ss.k2_max, 0) + ",";
       ln += StringFormat("%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,", g_rt[i].zb[0], g_rt[i].zb[1], g_rt[i].zb[2], g_rt[i].zb[3], g_rt[i].zb[4], g_rt[i].zb[5]);
+      ln += StringFormat("%d,%.3f,%.3f,", g_rt[i].htf_tier, g_rt[i].htf_zr, g_rt[i].htf_zs);
       ln += StringFormat("%s,%s,%d,%d,%.0f,%.2f,%.0f,%.0f,%.0f\r\n",
                          TimeToString((datetime)(g_rt[i].msc_out / 1000), TIME_DATE|TIME_SECONDS), ReplayReasonCode(g_rt[i].reason),
                          g_rt[i].lock_lv, (int)((g_rt[i].msc_out - g_rt[i].msc_in) / 1000), g_rt[i].pnl, g_rt[i].usd,
@@ -2607,7 +2765,7 @@ void ReplayWriteBarsCSV(int done) {
    FileWriteString(h, "bar_time,side,peak_z,zreg_open,zreg_high,zreg_low,zreg_close,zsma_open,zsma_high,zsma_low,zsma_close,z_float_dir," +
                       "tick_from_bar_open,spd_zreg_t2_sec,spd_zreg_t3_sec,spd_zreg_t4_sec,spd_zreg_from_open,spd_zsma_t2_sec,spd_zsma_t3_sec,spd_zsma_t4_sec,spd_zsma_from_open," +
                       "spd_any_t2_sec,spd_any_t3_sec,spd_any_t4_sec,spd_any_from_open,spd_any_rate_t2," +
-                      "zone_cum_sec,zone_max_sec,bars_peak_zone,bars_close_zone,k2,k2_max," +
+                      "zone_cum_sec,zone_max_sec,bars_peak_zone,bars_close_zone,k2,k2_max,htf_tier,htf_zreg,htf_zsma," +
                       "ext_time,ext_price,sigma_pts,result,result_min,max_rev_sigma,max_cont_pts,trades,trades_usd\r\n");
    for(int k = 0; k < ArraySize(g_bo); k++) {
       if(g_bo[k].result == BO_WAIT) continue;
@@ -2619,6 +2777,7 @@ void ReplayWriteBarsCSV(int done) {
       ln += CsvSpeed(true, g_bo[k].st.sp[0]) + CsvSpeed(true, g_bo[k].st.sp[1]) + CsvSpeedAny(true, g_bo[k].st.sp[2]);
       ln += StringFormat("%I64d,%I64d,%d,%d,%d,%d,", g_bo[k].st.zone_cum_ms / 1000, g_bo[k].st.zone_max_ms / 1000,
                          g_bo[k].peak_n, g_bo[k].close_n, g_bo[k].st.k2, g_bo[k].st.k2_max);
+      ln += StringFormat("%d,%.3f,%.3f,", g_bo[k].htf_tier, g_bo[k].htf_zr, g_bo[k].htf_zs);
       int    nt  = 0;
       double usd = 0.0;
       for(int i = 0; i < ArraySize(g_rt); i++)   // ไม้จำลองที่เปิดในแท่งนี้ ฝั่งนี้ (ปิดแล้ว)
@@ -2652,7 +2811,24 @@ void ReplayStep() {
    if(to >= g_rp_cursor) {
       MqlTick ticks[];
       int got = CopyTicksRange(_Symbol, ticks, COPY_TICKS_INFO, (ulong)g_rp_cursor, (ulong)to);
-      if(got < 0) { g_rp_status = StringFormat("⏳ กำลังโหลด tick (error %d)", GetLastError()); return; }
+      if(got < 0) {   // ดึงไม่สำเร็จ → รอ (MT5 กำลังโหลดจากโบรก) ไม่เกิน RP_SKIP_SEC แล้วข้ามช่วงนี้ไป
+         int err = GetLastError();
+         if(g_rp_fail_cur != g_rp_cursor) { g_rp_fail_cur = g_rp_cursor; g_rp_fail_ms = GetTickCount(); }
+         uint waited = (GetTickCount() - g_rp_fail_ms) / 1000;
+         string rng = TimeToString((datetime)(g_rp_cursor / 1000), TIME_DATE|TIME_MINUTES) + " – " + TimeToString((datetime)(to / 1000), TIME_DATE|TIME_MINUTES);
+         if(g_rp_caught || waited < (uint)RP_SKIP_SEC) {
+            g_rp_status = StringFormat("⏳ กำลังโหลด tick ช่วง %s (error %d, รอมา %d วิ%s)", rng, err, (int)waited,
+                                       (g_rp_caught ? "" : StringFormat(", ครบ %d วิ = ข้ามช่วงนี้", RP_SKIP_SEC)));
+            return;
+         }
+         g_rp_skip_n++;
+         g_rp_skip_txt = rng + StringFormat(" (error %d)", err);
+         PrintFormat("⚠️ Tick Replay: ดึง tick ช่วง %s ไม่สำเร็จเกิน %d วิ (error %d) → ข้ามช่วงนี้", rng, RP_SKIP_SEC, err);
+         g_rp_cursor   = to + 1;
+         g_rp_fail_cur = -1;
+         return;
+      }
+      g_rp_fail_cur = -1;
       if(got == 0 && !g_rp_caught && g_rp_retry < 3 &&
          GetTimeStateAt((datetime)((g_rp_cursor + to) / 2000)) != TS_CLOSED) {
          g_rp_retry++;   // ตลาดน่าจะเปิดแต่ยังไม่ได้ tick → รอโหลดอีกนิด
@@ -2947,7 +3123,7 @@ void UpdateDashboard(int ts, datetime now) {
    string news_str = NextNewsText(now);
 
    long   now_msc = MathMax(g_last_tick_msc, (long)now * 1000);
-   string msg = StringFormat("=== 📊 7-Lines Counter EA v14.10 (%s T2 ลอย>%.2f Z ทั้งคู่>%.1f %d วิ (ลอย>%.1f ตัวเดียวได้) | %s T3 Z ตัวใด>%.1f %d วิ | %s T4 >%.1f ทันที | SL High/Low แท่ง ± %.0f | เกราะ %.0f→+%.0f / %.0f→+%.0f) ===\n",
+   string msg = StringFormat("=== 📊 7-Lines Counter EA v14.20 (%s T2 ลอย>%.2f Z ทั้งคู่>%.1f %d วิ (ลอย>%.1f ตัวเดียวได้) | %s T3 Z ตัวใด>%.1f %d วิ | %s T4 >%.1f ทันที | SL High/Low แท่ง ± %.0f | เกราะ %.0f→+%.0f / %.0f→+%.0f) ===\n",
                              (g_en[2] ? "✅" : "⛔"), InpFloatMin, InpT2_Z, InpT2_Sec, InpT2EitherFloat, (g_en[3] ? "✅" : "⛔"), InpT3_Z, InpT3_Sec,
                              (g_en[4] ? "✅" : "⛔"), InpT4_Z, InpSLPeak_Pts, InpLock1_Trigger_Pts, InpLock1_Pts, InpLock2_Trigger_Pts, InpLock2_Pts);
    msg += StringFormat("Z (%s, %d) : %s\n", EnumToString(InpZ_Timeframe), InpZ_Period, z_str);
@@ -2963,6 +3139,13 @@ void UpdateDashboard(int ts, datetime now) {
    if(InpShowZSpeed) {
       msg += "แท่งนี้ SELL : " + LiveStatText(0, now_msc) + "\n";
       msg += "แท่งนี้ BUY  : " + LiveStatText(1, now_msc) + "\n";
+   }
+   if(InpShowHTF && g_htf_ok) {
+      double zr0, zs0, zr1, zs1;
+      datetime hb;
+      int t0 = HTFTierAt(now, 0, zr0, zs0, hb), t1 = HTFTierAt(now, 1, zr1, zs1, hb);
+      msg += StringFormat("%s แท่งนี้ : SELL %s (R %+.2f / S %+.2f) | BUY %s (R %+.2f / S %+.2f)\n", HTFName(),
+                          (t0 > 0 ? StageTag(t0) : "−"), zr0, zs0, (t1 > 0 ? StageTag(t1) : "−"), zr1, zs1);
    }
    msg += "เวลาตลาด : " + TimeStateText(ts, now) + "\n";
    msg += "สถานะล่าสุด : " + g_last_status;
@@ -3036,6 +3219,8 @@ void ToggleTier(int tier) {
    ObjectsDeleteAll(0, OBJ_PREFIX + "RP_");
    ReplayReset();
    g_lay_sig     = "";
+   g_htf_bar     = 0;   // กรอบ TF ใหญ่ใช้ปุ่ม T2-T4 ด้วย → วาดใหม่ทั้งชุด
+   g_barz_bar    = 0;
    g_last_status = StringFormat("%s %s (ปุ่ม) — Tick Replay เริ่มเล่นซ้ำใหม่", StageTag(tier), (g_en[tier] ? "เปิด" : "ปิด"));
    PrintFormat("🔘 %s", g_last_status);
    DrawTierButtons();
@@ -3149,7 +3334,7 @@ void LayoutLabels() {
       placed++;
    }
 
-   // 4) ป้ายบนแท่ง (TF ของ Z) ในช่วงที่มองเห็น
+   // 4) ป้ายบนแท่ง (TF ของ Z) + ป้าย TF ใหญ่ ในช่วงที่มองเห็น — กลุ่มละไม่เกิน 3 ป้าย เรียงจากติดแท่งออกไป
    if(ArraySize(g_zl_names) == 0) return;
    MqlRates zb[];
    datetime t_l = t_vis - (datetime)PeriodSeconds(InpZ_Timeframe);
@@ -3162,19 +3347,41 @@ void LayoutLabels() {
    bool     gup[];
    double   gbase[];
    long     gkey[];
+   string   gi[];   // ชื่อป้ายของกลุ่ม g = gi[g * 3 + m]
    for(int q = 0; q < got; q++) {
       string ts = IntegerToString((long)zb[q].time);
       bool   live = (q == got - 1 && zb[q].time == CurrentZBarTime());
       double hi = (live && g_bar0_hi > 0.0) ? g_bar0_hi : zb[q].high;
       double lo = (live && g_bar0_lo > 0.0) ? g_bar0_lo : zb[q].low;
       for(int u = 0; u < 2; u++) {   // u = 0 เหนือแท่ง / 1 ใต้แท่ง
-         bool hz = ObjectFind(0, OBJ_PREFIX + (u == 0 ? "ZL_S_" : "ZL_B_") + ts) >= 0;
-         bool hf = ObjectFind(0, OBJ_PREFIX + (u == 0 ? "FL_B_" : "FL_S_") + ts) >= 0;
-         if(!hz && !hf) continue;
-         ArrayResize(gt, ng + 1); ArrayResize(gup, ng + 1); ArrayResize(gbase, ng + 1); ArrayResize(gkey, ng + 1);
+         string i0 = OBJ_PREFIX + (u == 0 ? "FL_B_" : "FL_S_") + ts;
+         string i1 = OBJ_PREFIX + (u == 0 ? "ZL_S_" : "ZL_B_") + ts;
+         string i2 = OBJ_PREFIX + (u == 0 ? "ZM_S_" : "ZM_B_") + ts;
+         bool   hz = ObjectFind(0, i1) >= 0;
+         if(!hz && ObjectFind(0, i0) < 0) continue;
+         ArrayResize(gt, ng + 1); ArrayResize(gup, ng + 1); ArrayResize(gbase, ng + 1); ArrayResize(gkey, ng + 1); ArrayResize(gi, (ng + 1) * 3);
          gt[ng] = zb[q].time; gup[ng] = (u == 0); gbase[ng] = (u == 0) ? hi + off : lo - off;
-         gkey[ng] = (hz ? (long)4.0e9 : (long)0) + (long)zb[q].time;   // ป้าย Z ก่อนป้ายลอยตัว, แท่งใหม่ก่อน
+         gkey[ng] = (hz ? (long)4.0e9 : (long)0) + (long)zb[q].time;   // ป้าย Z ก่อน, ป้ายลอยตัวทีหลัง, แท่งใหม่ก่อน
+         gi[ng * 3] = i0; gi[ng * 3 + 1] = i1; gi[ng * 3 + 2] = i2;
          ng++;
+      }
+   }
+   if(InpShowHTF && g_htf_ok) {   // ป้าย TF ใหญ่: กึ่งกลางแท่ง TF ใหญ่ เหนือ High / ใต้ Low (จัดหลังป้าย Z ก่อนป้ายลอยตัว)
+      MqlRates hb[];
+      long     per_h = PeriodSeconds(InpHTF);
+      int      gh    = CopyRates(_Symbol, InpHTF, t_l - (datetime)per_h, t_r, hb);
+      for(int q = 0; q < gh; q++) {
+         string ts = IntegerToString((long)hb[q].time);
+         for(int u = 0; u < 2; u++) {
+            string i0 = OBJ_PREFIX + (u == 0 ? "HT_U_" : "HT_D_") + ts;
+            if(ObjectFind(0, i0) < 0) continue;
+            ArrayResize(gt, ng + 1); ArrayResize(gup, ng + 1); ArrayResize(gbase, ng + 1); ArrayResize(gkey, ng + 1); ArrayResize(gi, (ng + 1) * 3);
+            gt[ng] = hb[q].time + (datetime)(per_h / 2); gup[ng] = (u == 0);
+            gbase[ng] = (u == 0) ? hb[q].high + off : hb[q].low - off;
+            gkey[ng]  = (long)2.0e9 + (long)hb[q].time;
+            gi[ng * 3] = i0; gi[ng * 3 + 1] = ""; gi[ng * 3 + 2] = "";
+            ng++;
+         }
       }
    }
    // เรียงความสำคัญจากมากไปน้อย
@@ -3185,21 +3392,18 @@ void LayoutLabels() {
          bool u0 = gup[b]; gup[b] = gup[b - 1]; gup[b - 1] = u0;
          double p0 = gbase[b]; gbase[b] = gbase[b - 1]; gbase[b - 1] = p0;
          long k0 = gkey[b]; gkey[b] = gkey[b - 1]; gkey[b - 1] = k0;
+         for(int m = 0; m < 3; m++) { string s0 = gi[b * 3 + m]; gi[b * 3 + m] = gi[(b - 1) * 3 + m]; gi[(b - 1) * 3 + m] = s0; }
          b--;
       }
    }
    for(int g = 0; g < ng; g++) {
-      string ts = IntegerToString((long)gt[g]);
-      string items[3];
-      if(gup[g]) { items[0] = OBJ_PREFIX + "FL_B_" + ts; items[1] = OBJ_PREFIX + "ZL_S_" + ts; items[2] = OBJ_PREFIX + "ZM_S_" + ts; }
-      else       { items[0] = OBJ_PREFIX + "FL_S_" + ts; items[1] = OBJ_PREFIX + "ZL_B_" + ts; items[2] = OBJ_PREFIX + "ZM_B_" + ts; }
       int x = 0, y = 0;
       bool onscreen = ChartTimePriceToXY(0, 0, gt[g], gbase[g], x, y);
       double cursor = y;
       bool   hide   = !onscreen;
       for(int m = 0; m < 3; m++) {
-         string nm2 = items[m];
-         if(ObjectFind(0, nm2) < 0) continue;
+         string nm2 = gi[g * 3 + m];
+         if(nm2 == "" || ObjectFind(0, nm2) < 0) continue;
          if(hide) { SetLabelVisible(nm2, false); continue; }
          uint tw = 0, th = 0;
          TextSetFont(ObjectGetString(0, nm2, OBJPROP_FONT), -10 * (int)ObjectGetInteger(0, nm2, OBJPROP_FONTSIZE));
@@ -3291,6 +3495,14 @@ bool BuildPanel(datetime bar, string &L[], color &C[]) {
    PanelAdd(L, C, StringFormat("แท่งติดกัน    ยอด Z ≥ %.1f = %d แท่ง    %s Z ≥ %.1f = %d แท่ง%s", InpZoneZ, pk, cls, InpZoneZ, cl,
                                (live ? "  (แท่งนี้ยังไม่ปิด)" : "")), InpClrPanelText);
 
+   if(g_htf_ok) {
+      double hzr, hzs;
+      datetime hb;
+      int ht = HTFTierAt(bar, side, hzr, hzs, hb);
+      if(hb > 0)
+         PanelAdd(L, C, StringFormat("%s แท่ง %s (ทั้งแท่ง)    %s    Z_reg %+.2f    Z_SMA %+.2f", HTFName(), TimeToString(hb, TIME_MINUTES),
+                                     (ht > 0 ? StageTag(ht) : "ไม่ถึง T2"), hzr, hzs), (ht > 0 ? HTFColor(ht) : InpClrPanelText));
+   }
    int k = BarRecFind(bar, side);
    if(k >= 0) {
       color oc = (g_bo[k].result == BO_REV) ? clrLimeGreen : (g_bo[k].result == BO_CONT ? clrTomato : InpClrPanelText);
@@ -3428,6 +3640,12 @@ int OnInit() {
    if(!g_session_ok) Print("⚠️ อ่านเวลา Session ของ Symbol ไม่ได้ — ปิดการกรองเวลาตลาด");
 
    if(StringFind(_Symbol, "XAU") < 0) PrintFormat("⚠️ EA ออกแบบสำหรับ XAUUSD แต่กำลังรันบน %s", _Symbol);
+   long per_z = PeriodSeconds(InpZ_Timeframe), per_h = PeriodSeconds(InpHTF);
+   g_htf_ok   = (per_h > per_z && per_z > 0 && per_h % per_z == 0 && per_h <= DAY_SEC);
+   if(InpShowHTF && !g_htf_ok)
+      PrintFormat("⚠️ InpHTF (%s) ต้องใหญ่กว่าและหารลงตัวด้วย TF ของ Z (%s) และไม่เกิน D1 — ปิดกรอบ TF ใหญ่",
+                  EnumToString(InpHTF), EnumToString(InpZ_Timeframe));
+   g_htf_bar  = 0;
    g_barz_bar = 0;
    ArrayResize(g_zl_names, 0);
    ArrayResize(g_zl_times, 0);
@@ -3523,6 +3741,7 @@ void OnTimer() {
    if(g_draw) {
       UpdateZLines();
       UpdateBarZLabels();
+      UpdateHTFMarks();
       UpdateEntryMarks();
       ReplayStep();
       LayoutLabels();
