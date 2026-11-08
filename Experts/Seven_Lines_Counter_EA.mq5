@@ -24,7 +24,9 @@
 //
 // 📋 ออเดอร์ (v14.30): ครบเงื่อนไข → วาง Stop Order 2 ตัว ห่างจากราคาสัญญาณฝั่งละ 1,000 จุด (Lot ตามระดับทั้งคู่)
 //  • สวนกลับ: สัญญาณ SELL (Z ขึ้น) = Sell Stop ที่ Bid − 1,000, SL = High ของแท่ง ณ ตอนสัญญาณ + 500 (BUY กลับทิศ)
+//            ห่างจากราคาเข้าไม่เกิน 5,000 จุด (v14.31)
 //  • ตามน้ำ : สัญญาณ SELL = Buy Stop ที่ Ask + 1,000, SL = ราคาเปิดของแท่งสัญญาณ (BUY กลับทิศ)
+//            ราคาเข้าห่างราคาเปิดแท่ง ≤ 2,000 จุด → SL = ราคาเปิดของแท่งก่อนหน้า (ผิดฝั่ง = ใช้ราคาเปิดแท่งสัญญาณ) (v14.31)
 //  • ไม่มี TP / โล่ไล่จี้ / เกราะ — ตัดจบที่ราคาปิดของแท่งที่ 2 หลังแท่งที่ออเดอร์ถูกเกี่ยว (= tick แรกของแท่งถัดไป)
 //  • จบแท่งสัญญาณแล้วออเดอร์ตัวไหนยังไม่ถูกเกี่ยว → ยกเลิก | เข้าช่วงห้ามเข้าก่อนปิดสัปดาห์ → ยกเลิกออเดอร์รอ
 //  • ชุดจบ = ไม่เหลือออเดอร์รอและไม้ที่ถือ (SL ทั้งคู่ / ตัดจบ / ไม่ถูกเกี่ยว) → เริ่มหาสัญญาณใหม่
@@ -53,7 +55,7 @@
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "14.30"
+#property version     "14.31"
 #property description "สวนกลับค่า Z ผิดปกติที่ควรดีดกลับเร็ว สำหรับ XAUUSD (บัญชี Hedging)"
 
 #include <Trade\Trade.mqh>
@@ -83,6 +85,8 @@ input double          InpLot               = 0.01;       // Lot ฐาน (T2 = 
 input double          InpTierLotStep       = 0.01;       // Lot เพิ่มต่อระดับ (T2 = ฐาน+step, T3 = +2·step, T4 = +3·step)
 input double          InpStopDist_Pts      = 1000.0;     // Stop Order ห่างจากราคาสัญญาณฝั่งละกี่จุด (Buy Stop = Ask + / Sell Stop = Bid −)
 input double          InpSLPeak_Pts        = 500.0;      // SL ฝั่งสวนกลับ = High (สัญญาณ SELL) / Low (สัญญาณ BUY) ของแท่ง ณ ตอนสัญญาณ ± ระยะนี้ (จุด)
+input double          InpCounterMaxSL_Pts  = 5000.0;     // SL ฝั่งสวนกลับห่างจากราคาเข้าได้สูงสุดกี่จุด (รวม buffer แล้ว, 0 = ไม่จำกัด)
+input double          InpTrendNearOpen_Pts = 2000.0;     // ฝั่งตามน้ำ: ราคาเข้าห่างราคาเปิดแท่ง ≤ ค่านี้ → SL ใช้ราคาเปิดของแท่งก่อนหน้า (0 = ปิด)
 input int             InpExitBars          = 2;          // ตัดจบที่ราคาปิดของแท่งที่ N หลังแท่งที่ออเดอร์ถูกเกี่ยว (TF ของ Z)
 input double          InpSlippage_Pts      = 300.0;      // Slippage สูงสุดตอนส่งคำสั่ง (จุด)
 input long            InpMagic             = 880100;     // Magic Number
@@ -746,6 +750,53 @@ double SLPrice(int dir, double bar_hi, double bar_lo) {
    return (dir == -1) ? bar_hi + d : bar_lo - d;
 }
 
+// ที่มาของ SL (บันทึก / แสดงผล)
+#define SLM_PEAK      0   // สวน: ยอดแท่ง ± InpSLPeak_Pts
+#define SLM_PEAK_CAP  1   // สวน: ห่างเกินเพดาน → ราคาเข้า ± InpCounterMaxSL_Pts
+#define SLM_OPEN      2   // ตาม: ราคาเปิดของแท่งสัญญาณ
+#define SLM_OPEN_PREV 3   // ตาม: ราคาเข้าใกล้ราคาเปิดแท่ง → ราคาเปิดของแท่งก่อนหน้า
+
+// SL ฝั่งสวน (dir = ทิศของไม้): ยอดแท่ง ± InpSLPeak_Pts แต่ห่างจากราคาเข้าไม่เกิน InpCounterMaxSL_Pts
+double CounterSL(int dir, double entry, double bar_hi, double bar_lo, int &mode) {
+   double sl = SLPrice(dir, bar_hi, bar_lo);
+   mode = SLM_PEAK;
+   if(InpCounterMaxSL_Pts > 0.0) {
+      double cap = PtsToPrice(InpCounterMaxSL_Pts);
+      if(dir == -1 && sl > entry + cap) { sl = entry + cap; mode = SLM_PEAK_CAP; }
+      if(dir ==  1 && sl < entry - cap) { sl = entry - cap; mode = SLM_PEAK_CAP; }
+   }
+   return sl;
+}
+
+// SL ฝั่งตาม (dir = ทิศของไม้): ราคาเปิดของแท่งสัญญาณ — ราคาเข้าห่างไม่เกิน InpTrendNearOpen_Pts
+//   → ราคาเปิดของแท่งก่อนหน้า (ถ้าอยู่ฝั่งขาดทุนของราคาเข้า ไม่งั้นใช้ราคาเปิดแท่งสัญญาณตามเดิม)
+double TrendSL(int dir, double entry, double open0, double open1, int &mode) {
+   mode = SLM_OPEN;
+   if(InpTrendNearOpen_Pts <= 0.0 || MathAbs(entry - open0) > PtsToPrice(InpTrendNearOpen_Pts)) return open0;
+   bool valid = (open1 > 0.0) && ((dir == 1) ? open1 < entry : open1 > entry);
+   if(!valid) return open0;
+   mode = SLM_OPEN_PREV;
+   return open1;
+}
+
+string SLModeCode(int m) {
+   switch(m) {
+      case SLM_PEAK_CAP:  return "PEAK_CAP";
+      case SLM_OPEN:      return "OPEN";
+      case SLM_OPEN_PREV: return "OPEN_PREV";
+   }
+   return "PEAK";
+}
+
+string SLModeText(int m) {
+   switch(m) {
+      case SLM_PEAK_CAP:  return StringFormat("เพดาน %.0f จุดจากราคาเข้า (ยอดแท่ง ± %.0f ห่างเกิน)", InpCounterMaxSL_Pts, InpSLPeak_Pts);
+      case SLM_OPEN:      return "ราคาเปิดแท่งสัญญาณ";
+      case SLM_OPEN_PREV: return StringFormat("ราคาเปิดแท่งก่อนหน้า (ราคาเข้าห่างเปิดแท่ง ≤ %.0f)", InpTrendNearOpen_Pts);
+   }
+   return StringFormat("ยอดแท่ง ± %.0f", InpSLPeak_Pts);
+}
+
 // ตัวกรองตอนยิง (ใช้ร่วมกัน) — เวลาตลาด (1 ชม.หลังเปิด / ก่อนปิดสัปดาห์) + เพดานสเปรด
 string EntryBlockReason(int ts, double bid, double ask) {
    if(ts == TS_WAIT_OPEN)  return "หลังตลาดเปิดสัปดาห์";
@@ -902,7 +953,7 @@ string TimeStateText(int ts, datetime now) {
 //====================================================================
 // วาง Stop Order 1 ตัว: dir = ทิศของไม้ (+1 BUY STOP ที่ Ask + dist / −1 SELL STOP ที่ Bid − dist), kind "C" สวน / "F" ตาม
 //   คอมเมนต์ "<InpOrderComment> T3 C X3.25" (X = Z สุดขั้วในทิศกระชาก) — เคารพ Stops Level ทั้งราคาเข้าและ SL
-bool PlaceStop(int dir, int stage, string kind, double bid, double ask, double sl, datetime expire, double ext_z, double &price_out) {
+bool PlaceStop(int dir, int stage, string kind, double bid, double ask, double sl, string sl_note, datetime expire, double ext_z, double &price_out) {
    double lot   = TierLot(stage);
    double dist  = PtsToPrice(InpStopDist_Pts);
    double stops = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
@@ -924,7 +975,7 @@ bool PlaceStop(int dir, int stage, string kind, double bid, double ask, double s
    if(ok && (rc == TRADE_RETCODE_DONE || rc == TRADE_RETCODE_PLACED)) {
       PrintFormat("✅ วาง %s %s %s %.2f lot @ %s | SL %s (%s, ห่าง %.0f จุด) | หมดอายุ %s",
                   StageTag(stage), (kind == "C" ? "สวน" : "ตาม"), (dir == 1 ? "BUY STOP" : "SELL STOP"), lot,
-                  DoubleToString(price, _Digits), DoubleToString(sl, _Digits), (kind == "C" ? "ยอดแท่ง ± SL" : "ราคาเปิดแท่ง"),
+                  DoubleToString(price, _Digits), DoubleToString(sl, _Digits), sl_note,
                   PriceToPts(MathAbs(price - sl)), TimeToString(expire, TIME_MINUTES));
       return true;
    }
@@ -991,8 +1042,14 @@ void LiveFire(int dir, int ts, double bid, double ask) {
    double   ext_z  = ZHi(dir, w.ext_r, w.ext_s);
    datetime expire = BarStartOf(now) + (datetime)PeriodSeconds(InpZ_Timeframe);
    double   pc = 0.0, pf = 0.0;
-   bool     okc = PlaceStop( dir, tier, "C", bid, ask, SLPrice(dir, hi, lo), expire, ext_z, pc);
-   bool     okf = PlaceStop(-dir, tier, "F", bid, ask, g_bar0_open, expire, ext_z, pf);
+   double   dist   = PtsToPrice(InpStopDist_Pts);
+   double   ec     = (dir == 1) ? ask + dist : bid - dist;   // ราคาเข้าของขาสวน / ขาตาม
+   double   ef     = (dir == 1) ? bid - dist : ask + dist;
+   int      mc, mf;
+   double   slc    = CounterSL(dir, ec, hi, lo, mc);
+   double   slf    = TrendSL(-dir, ef, g_bar0_open, iOpen(_Symbol, InpZ_Timeframe, 1), mf);
+   bool     okc = PlaceStop( dir, tier, "C", bid, ask, slc, SLModeText(mc), expire, ext_z, pc);
+   bool     okf = PlaceStop(-dir, tier, "F", bid, ask, slf, SLModeText(mf), expire, ext_z, pf);
    if(okc || okf) {
       g_last_status = StringFormat("วางชุด %s %s (Lot %.2f) | สวน %s @ %s%s | ตาม %s @ %s%s | สุดขั้ว R %+.2f / S %+.2f",
                                    side, StageTag(tier), TierLot(tier),
@@ -1825,6 +1882,7 @@ void UpdateEntryMarks() {
 struct RTrade {
    int      set_id;        // รหัสชุด (สัญญาณเดียวกัน)
    int      kind;          // 0 = สวน / 1 = ตาม
+   int      sl_mode;       // ที่มาของ SL (SLM_*)
    int      sig_dir;       // ทิศของฝั่งสวน (−1 = สัญญาณ SELL จาก Z ขึ้น / +1 = สัญญาณ BUY)
    long     msc_sig;       // เวลาสัญญาณ (วางออเดอร์)
    double   p_order;       // ราคา Stop
@@ -2049,6 +2107,7 @@ int ReplayAddLeg(int sig_dir, int kind, int stage, long msc, double order_px, do
    else         sl = MathMax(sl, order_px + _Point);
    g_rt[i].set_id   = set_id;
    g_rt[i].kind     = kind;
+   g_rt[i].sl_mode  = (kind == 0) ? SLM_PEAK : SLM_OPEN;
    g_rt[i].sig_dir  = sig_dir;
    g_rt[i].msc_sig  = msc;
    g_rt[i].p_order  = order_px;
@@ -2173,10 +2232,18 @@ void ReplayFire(int dir, long fire_msc) {
    long     exp_ms = ((long)BarStartOf(t) + PeriodSeconds(InpZ_Timeframe)) * 1000;
    datetime nc     = NoEntryStartAt(t);
    if(nc > 0) exp_ms = MathMin(exp_ms, (long)nc * 1000);
-   double   open = (g_rp_b >= 0) ? g_rr[g_rp_b].open : g_rp_bid;
-   int      set  = ++g_set_n;
-   int      ic   = ReplayAddLeg(dir, 0, tier, fire_msc, (dir == 1) ? g_rp_ask + dist : g_rp_bid - dist, SLPrice(dir, hi, lo), exp_ms, set);
-   int      itf  = ReplayAddLeg(dir, 1, tier, fire_msc, (dir == 1) ? g_rp_bid - dist : g_rp_ask + dist, open, exp_ms, set);
+   double   open  = (g_rp_b >= 0) ? g_rr[g_rp_b].open : g_rp_bid;
+   double   open1 = (g_rp_b >= 1) ? g_rr[g_rp_b - 1].open : 0.0;
+   double   ec    = (dir == 1) ? g_rp_ask + dist : g_rp_bid - dist;   // ราคาเข้าของขาสวน / ขาตาม
+   double   ef    = (dir == 1) ? g_rp_bid - dist : g_rp_ask + dist;
+   int      mc, mf;
+   double   slc   = CounterSL(dir, ec, hi, lo, mc);
+   double   slf   = TrendSL(-dir, ef, open, open1, mf);
+   int      set   = ++g_set_n;
+   int      ic    = ReplayAddLeg(dir, 0, tier, fire_msc, ec, slc, exp_ms, set);
+   int      itf   = ReplayAddLeg(dir, 1, tier, fire_msc, ef, slf, exp_ms, set);
+   g_rt[ic].sl_mode  = mc;
+   g_rt[itf].sl_mode = mf;
    int      legs[2];
    legs[0] = ic; legs[1] = itf;
    for(int m = 0; m < 2; m++) {
@@ -2461,9 +2528,7 @@ void DrawReplayTrade(int i) {
    datetime t_sig   = (datetime)(g_rt[i].msc_sig / 1000);
    datetime t_in    = (datetime)(g_rt[i].msc_in / 1000);
    string   otype   = is_sell ? "SELL STOP" : "BUY STOP";
-   string   slwhy   = (g_rt[i].kind == 0) ? StringFormat("%s แท่ง %s %s %.0f จุด", (g_rt[i].sig_dir == -1 ? "High" : "Low"),
-                                                         DoubleToString(g_rt[i].peak, _Digits), (g_rt[i].sig_dir == -1 ? "+" : "−"), InpSLPeak_Pts)
-                                              : "ราคาเปิดแท่งสัญญาณ";
+   string   slwhy   = SLModeText(g_rt[i].sl_mode);
 
    // 1) ระดับ Stop: เส้นจากเวลาสัญญาณ → ถูกเกี่ยว / หมดอายุ
    string   np    = OBJ_PREFIX + "RP_P_" + IntegerToString(g_rt[i].msc_sig) + "_" + IntegerToString(i);
@@ -2725,7 +2790,7 @@ void ReplayWriteCSV(int done) {
    string fn = ReplayCSVName();
    int h = FileOpen(fn, FILE_WRITE | FILE_TXT | FILE_ANSI);
    if(h == INVALID_HANDLE) { PrintFormat("⚠️ เขียนไฟล์ %s ไม่สำเร็จ (error %d)", fn, GetLastError()); return; }
-   FileWriteString(h, "set_id,order_kind,signal_time,signal_side,order_price," +
+   FileWriteString(h, "set_id,order_kind,signal_time,signal_side,order_price,sl_mode," +
                       "time_in,side,tier,max_tier,bar_seq,lot,price_in,sl_peak,sl_init_pts,z_reg,z_sma,ext_zreg,ext_zsma,z_float,z_open,z_gap," +
                       "a_break_pts,a_avg_range_pts,a_break_ratio,b_move_last30_pts,b_move_prev30_pts," +
                       "c_zreg_drop,c_zsma_drop,d_pull_pts,d_pull_frac,e_ticks_per_sec_last15,e_ticks_per_sec_prev60," +
@@ -2736,9 +2801,9 @@ void ReplayWriteCSV(int done) {
                       "time_out,exit,hold_sec,pnl_pts,usd,profit_min_pts,profit_max_pts,profit_avg_pts\r\n");
    for(int i = 0; i < ArraySize(g_rt); i++) {
       if(!RDone(g_rt[i].reason)) continue;
-      string ln = StringFormat("%d,%s,%s,%s,%s,", g_rt[i].set_id, (g_rt[i].kind == 0 ? "COUNTER" : "TREND"),
+      string ln = StringFormat("%d,%s,%s,%s,%s,%s,", g_rt[i].set_id, (g_rt[i].kind == 0 ? "COUNTER" : "TREND"),
                                TimeToString((datetime)(g_rt[i].msc_sig / 1000), TIME_DATE|TIME_SECONDS), (g_rt[i].sig_dir == -1 ? "UP" : "DOWN"),
-                               DoubleToString(g_rt[i].p_order, _Digits));
+                               DoubleToString(g_rt[i].p_order, _Digits), SLModeCode(g_rt[i].sl_mode));
       ln += StringFormat("%s,%s,%d,%d,%d,%.2f,%s,%s,%.0f,%.3f,%.3f,%.3f,%.3f,",
                                TimeToString((datetime)(g_rt[i].msc_in / 1000), TIME_DATE|TIME_SECONDS), (g_rt[i].dir == -1 ? "SELL" : "BUY"),
                                g_rt[i].stage, g_rt[i].max_tier, g_rt[i].bar_seq, g_rt[i].lot, DoubleToString(g_rt[i].p_in, _Digits),
@@ -2790,7 +2855,7 @@ void ReplayWriteSetsCSV(int done) {
    if(h == INVALID_HANDLE) { PrintFormat("⚠️ เขียนไฟล์ %s ไม่สำเร็จ (error %d)", fn, GetLastError()); return; }
    FileWriteString(h, "set_id,signal_time,signal_side,tier,max_tier,lot,z_reg,z_sma,ext_zreg,ext_zsma,z_float,bar_extreme," +
                       "spd_any_t2_sec,zone_run_sec,k2,prev_bars_peak_zone,htf_tier," +
-                      "counter_price,counter_sl,trend_price,trend_sl,filled," +
+                      "counter_price,counter_sl,counter_sl_mode,trend_price,trend_sl,trend_sl_mode,filled," +
                       "counter_filled,counter_time_in,counter_price_in,counter_exit,counter_pnl_pts,counter_usd," +
                       "trend_filled,trend_time_in,trend_price_in,trend_exit,trend_pnl_pts,trend_usd,set_usd\r\n");
    for(int i = 0; i < ArraySize(g_rt); i++) {
@@ -2806,8 +2871,9 @@ void ReplayWriteSetsCSV(int done) {
       ln += CsvNum(so && g_rt[c].ss.sp[2].sec[0] >= 0, g_rt[c].ss.sp[2].sec[0], 0) + "," +
             StringFormat("%I64d,", g_rt[c].zone_run) + CsvNum(so, g_rt[c].ss.k2, 0) + "," +
             StringFormat("%d,%d,", g_rt[c].prev_pk, g_rt[c].htf_tier);
-      ln += StringFormat("%s,%s,%s,%s,%s,", DoubleToString(g_rt[c].p_order, _Digits), DoubleToString(g_rt[c].sl0, _Digits),
-                         DoubleToString(g_rt[f].p_order, _Digits), DoubleToString(g_rt[f].sl0, _Digits), SetResultCode(r));
+      ln += StringFormat("%s,%s,%s,%s,%s,%s,%s,", DoubleToString(g_rt[c].p_order, _Digits), DoubleToString(g_rt[c].sl0, _Digits),
+                         SLModeCode(g_rt[c].sl_mode), DoubleToString(g_rt[f].p_order, _Digits), DoubleToString(g_rt[f].sl0, _Digits),
+                         SLModeCode(g_rt[f].sl_mode), SetResultCode(r));
       ln += CsvLeg(c) + CsvLeg(f) + DoubleToString(g_rt[c].usd + g_rt[f].usd, 2) + "\r\n";
       FileWriteString(h, ln);
    }
@@ -3193,7 +3259,7 @@ void UpdateDashboard(int ts, datetime now) {
    string news_str = NextNewsText(now);
 
    long   now_msc = MathMax(g_last_tick_msc, (long)now * 1000);
-   string msg = StringFormat("=== 📊 7-Lines Counter EA v14.30 (%s T2 ลอย>%.2f Z ทั้งคู่>%.1f %d วิ (ลอย>%.1f ตัวเดียวได้) | %s T3 Z ตัวใด>%.1f %d วิ | %s T4 >%.1f ทันที | Stop ±%.0f: สวน SL ยอด±%.0f / ตาม SL เปิดแท่ง | ตัดจบ %d แท่ง) ===\n",
+   string msg = StringFormat("=== 📊 7-Lines Counter EA v14.31 (%s T2 ลอย>%.2f Z ทั้งคู่>%.1f %d วิ (ลอย>%.1f ตัวเดียวได้) | %s T3 Z ตัวใด>%.1f %d วิ | %s T4 >%.1f ทันที | Stop ±%.0f: สวน SL ยอด±%.0f / ตาม SL เปิดแท่ง | ตัดจบ %d แท่ง) ===\n",
                              (g_en[2] ? "✅" : "⛔"), InpFloatMin, InpT2_Z, InpT2_Sec, InpT2EitherFloat, (g_en[3] ? "✅" : "⛔"), InpT3_Z, InpT3_Sec,
                              (g_en[4] ? "✅" : "⛔"), InpT4_Z, InpStopDist_Pts, InpSLPeak_Pts, InpExitBars);
    msg += StringFormat("Z (%s, %d) : %s\n", EnumToString(InpZ_Timeframe), InpZ_Period, z_str);
@@ -3678,8 +3744,8 @@ int OnInit() {
       return(INIT_PARAMETERS_INCORRECT);
    }
    if(InpLot <= 0.0) { Print("❌ Lot ไม่ถูกต้อง"); return(INIT_PARAMETERS_INCORRECT); }
-   if(InpStopDist_Pts <= 0.0 || InpSLPeak_Pts < 0.0 || InpExitBars < 0) {
-      Print("❌ ระยะ Stop / SL / จำนวนแท่งตัดจบ ไม่ถูกต้อง");
+   if(InpStopDist_Pts <= 0.0 || InpSLPeak_Pts < 0.0 || InpExitBars < 0 || InpCounterMaxSL_Pts < 0.0 || InpTrendNearOpen_Pts < 0.0) {
+      Print("❌ ระยะ Stop / SL / เพดาน SL / ระยะใกล้ราคาเปิด / จำนวนแท่งตัดจบ ไม่ถูกต้อง");
       return(INIT_PARAMETERS_INCORRECT);
    }
    if(InpSigmaFloorMult < 0.0 || InpNewsBlock_Min < 0 || InpNoTradeAfterOpen_Min < 0 ||
