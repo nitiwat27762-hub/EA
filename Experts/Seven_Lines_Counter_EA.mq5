@@ -24,7 +24,7 @@
 //  • ครบเงื่อนไข → วาง Stop Order 2 ตัว ห่างจากราคาสัญญาณฝั่งละ 1,000 จุด (Lot ตามระดับทั้งคู่, ไม่ใช่ OCO)
 //    - สวนกลับ: สัญญาณ SELL (Z ขึ้น) = Sell Stop ที่ Bid − 1,000, SL = High ของแท่ง ณ ตอนสัญญาณ + 500 (ห่างราคาเข้าไม่เกิน 5,000)
 //    - ตามน้ำ : สัญญาณ SELL = Buy Stop ที่ Ask + 1,000, SL คงที่ 5,000 จุดจากราคาเข้า (v14.80)
-//    - Stop ที่ยังไม่ถูกเกี่ยวหมดอายุ 15 นาที | เข้าช่วงห้ามเข้าก่อนปิดสัปดาห์ → ยกเลิก
+//    - Stop ที่ยังไม่ถูกเกี่ยวหมดอายุ 5 นาที (v14.92) | เข้าช่วงห้ามเข้าก่อนปิดสัปดาห์ → ยกเลิก
 //
 // 📋 ชุด T5 (v14.80): ระหว่างแท่ง Z ตัวใดตัวหนึ่งเคยแตะ > 4.0 (ไม่นับเวลา) → เปิดแท่งใหม่ Market สวนกลับทันที
 //    Lot 0.05, SL คงที่ 5,000 | ไม่ต่อคิวชุดอื่น, ถือได้ทีละ 1 ไม้ | ติดตัวกรองลองใหม่ได้ 60 วิแรกของแท่ง | แตะทั้ง 2 ฝั่ง = ใช้ฝั่งล่าสุด
@@ -37,9 +37,12 @@
 // 📋 ทางออกชุด T2-T4 / T5 (ไม่มี TP)
 //  • ตัดจบที่ราคาปิดของแท่งที่ 2 หลังแท่งที่ออเดอร์ถูกเกี่ยว (= tick แรกของแท่งถัดไป)
 //  • เกราะกำไร 3 ขั้น: กำไรสูงสุด 5,000 → SL ทุน +1,500 / 10,000 → +5,000 / 20,000 → +10,000 (ขยับทางเดียว)
-//  • T2-T4 ถูกเกี่ยวทั้ง 2 ขา (v14.90): ขาแรกปิดทันที, ขาที่ 2 SL = ราคา Stop ของขาแรก (แล้วใช้เกราะ 3 ขั้น + ตัดจบ 2 แท่ง)
-//  • โหมดวิ่งยาว (v14.90, T2-T4 ที่เกี่ยวฝั่งเดียว + T5): กำไรสูงสุดถึง 5,000 → SL ทุน +1,500, ตัดจบเลื่อนเป็น 4 แท่ง,
-//    ลบ Stop อีกฝั่งที่รอ (T2-T4) → กำไรสูงสุดถึง 10,000 → ไล่จี้ SL ห่างราคา 8,000 (แทนเกราะขั้น 2-3)
+//  • T2-T4 ขาสวนถูกเกี่ยวก่อน → ขาตามถูกเกี่ยวทีหลัง (v14.92) = เทรนด์ตามน้ำ: ขาสวนที่ยังถือปิดทันที,
+//    ขาตาม SL → ราคาเปิดแท่งสัญญาณ (ผิดฝั่ง → ราคาเปิดแท่งก่อนหน้า → ราคา Stop ของขาสวน) + เข้าโหมดวิ่งยาวทันที
+//  • T2-T4 ขาตามถูกเกี่ยวก่อน → ขาสวนถูกเกี่ยวทีหลัง: ขาตามที่ยังถือปิดทันที, ขาสวน SL = ราคา Stop ของขาตาม + เกราะ 3 ขั้น + ตัดจบ 2 แท่ง
+//    (นับตามลำดับการเกี่ยว ไม่ว่าขาแรกจะยังถือหรือปิดไปแล้ว)
+//  • โหมดวิ่งยาว (T2-T4 ที่เกี่ยวฝั่งเดียว + T5 + ขาตามข้างบน) — ไม่ใช้เกราะ 3 ขั้นเลย (v14.92):
+//    ขาเดี่ยว / T5 เข้าโหมดเมื่อกำไรสูงสุดถึง 5,000 (ลบ Stop อีกฝั่งที่รอ) → ตัดจบ 4 แท่ง + กำไรสูงสุดถึง 10,000 → ไล่จี้ SL ห่างราคา 8,000
 //  • ปิดทุกไม้ 30 นาทีก่อนตลาดปิดสัปดาห์
 //
 // 🔘 1 ชุด/แท่ง (v14.91, เปิดปิดได้ด้วย InpOneSetPerBar / ปุ่ม "1/แท่ง"): ชุด T2-T4 วางได้ 1 ครั้งต่อแท่ง (นับตอนวางชุด)
@@ -65,7 +68,7 @@
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "14.91"
+#property version     "14.92"
 #property description "สวนกลับค่า Z ผิดปกติ 3 ชุดอิสระ (T2-T4 / T5 / S2) สำหรับ XAUUSD (บัญชี Hedging)"
 
 #include <Trade\Trade.mqh>
@@ -111,7 +114,7 @@ input double          InpStopDist_Pts      = 1000.0;     // Stop Order ห่า
 input double          InpSLPeak_Pts        = 500.0;      // SL ฝั่งสวนกลับ = High (สัญญาณ SELL) / Low (สัญญาณ BUY) ของแท่ง ณ ตอนสัญญาณ ± ระยะนี้ (จุด)
 input double          InpCounterMaxSL_Pts  = 5000.0;     // SL ฝั่งสวนกลับห่างจากราคาเข้าได้สูงสุดกี่จุด (รวม buffer แล้ว, 0 = ไม่จำกัด)
 input double          InpTrendSL_Pts       = 5000.0;     // ฝั่งตามน้ำ: SL คงที่ห่างจากราคาเข้า (จุด)
-input int             InpStopExpire_Min    = 15;         // Stop Order ที่ยังไม่ถูกเกี่ยว หมดอายุหลังวางกี่นาที
+input int             InpStopExpire_Min    = 5;          // Stop Order ที่ยังไม่ถูกเกี่ยว หมดอายุหลังวางกี่นาที
 input int             InpExitBars          = 2;          // ตัดจบที่ราคาปิดของแท่งที่ N หลังแท่งที่ออเดอร์ถูกเกี่ยว (TF ของ Z)
 input double          InpSlippage_Pts      = 300.0;      // Slippage สูงสุดตอนส่งคำสั่ง (จุด)
 input long            InpMagic             = 880100;     // Magic Number
@@ -124,7 +127,8 @@ input double          InpLock2_Trig_Pts    = 10000.0;    // เกราะข�
 input double          InpLock2_Pts         = 5000.0;     // เกราะขั้น 2: SL ไปที่ราคาเข้า + กี่จุด
 input double          InpLock3_Trig_Pts    = 20000.0;    // เกราะขั้น 3: กำไรสูงสุดถึงกี่จุด (0 = ปิดขั้นนี้)
 input double          InpLock3_Pts         = 10000.0;    // เกราะขั้น 3: SL ไปที่ราคาเข้า + กี่จุด
-input double          InpLongTrailStart_Pts = 10000.0;   // โหมดวิ่งยาว (T2-T4 เกี่ยวฝั่งเดียว / T5, เริ่มเมื่อกำไรสูงสุดถึงเกราะขั้น 1): กำไรสูงสุดถึงกี่จุด → ไล่จี้ (แทนเกราะขั้น 2-3)
+input double          InpLongMode_Pts      = 5000.0;     // โหมดวิ่งยาว: ขาเดี่ยว T2-T4 / T5 กำไรสูงสุดถึงกี่จุด → เข้าโหมด (ไม้กลุ่มนี้ไม่ใช้เกราะ 3 ขั้น)
+input double          InpLongTrailStart_Pts = 10000.0;   // โหมดวิ่งยาว: กำไรสูงสุดถึงกี่จุด → เริ่มไล่จี้
 input double          InpLongTrail_Pts     = 8000.0;     // โหมดวิ่งยาว: SL ไล่จี้ห่างราคากี่จุด
 input int             InpLongExitBars      = 4;          // โหมดวิ่งยาว: ตัดจบที่ราคาปิดของแท่งที่ N หลังแท่งที่ถูกเกี่ยว
 input double          InpTrailStep_Pts     = 100.0;      // ไล่จี้ (ไม้จริง): ขยับเมื่อดีขึ้นอย่างน้อยกี่จุด (ไม่เกิน 1 ครั้ง/วินาที)
@@ -367,12 +371,13 @@ struct PosMon {
    long   next_try;       // สั่งปิด / แก้ไม่สำเร็จ → ลองใหม่หลังเวลานี้ (msc)
    int    sys;            // ชุด: 1 = T2-T4 / 2 = T5 / 3 = S2
    int    mode;           // 0 = ปกติ / 1 = วิ่งยาว
-   bool   both;           // T2-T4: ชุดนี้ถูกเกี่ยวทั้ง 2 ขา (ขานี้คือขาที่ 2)
-   double want_sl;        // SL ที่ต้องตั้ง (ราคา Stop ของขาแรก, 0 = ไม่มี)
+   bool   both;           // T2-T4: ขาสวนที่ถูกเกี่ยวหลังขาตาม (ใช้เกราะ 3 ขั้น)
+   int    role;           // T2-T4: 0 = ขาเดี่ยว / 1 = ขาตามที่เกี่ยวหลังขาสวน / 2 = ขาสวนที่เกี่ยวหลังขาตาม
+   double want_sl;        // SL ที่ต้องตั้ง (0 = ไม่มี)
+   ulong  close_tk;       // ขาแรกของชุดที่ยังถือ → ต้องปิด (0 = ไม่มี)
    long   last_mod;       // ขยับ SL ล่าสุด (msc)
 };
-ulong      g_both_tk        = 0;       // ขาที่ 2 ของชุดที่ถูกเกี่ยวทั้ง 2 ขา (รอตั้ง SL)
-double     g_both_sl        = 0.0;
+
 PosMon     g_pm[];
 
 // --- Session ---
@@ -919,23 +924,29 @@ bool S2Plan(const S2State &s, int dir, double bid, double ask, double &sl, doubl
 bool SLBetter(int dir, double a, double b) { return (b <= 0.0) || ((dir == 1) ? (a > b + _Point * 0.5) : (a < b - _Point * 0.5)); }
 
 // เกราะ / ไล่จี้ (ใช้ร่วมกัน) → SL เป้าหมาย (0 = ยังไม่ขยับ) + lv (1-3 = เกราะขั้น, 4 = ไล่จี้)
-//   mode 0 = เกราะ 3 ขั้น / 1 = วิ่งยาว: เกราะขั้น 1 + ไล่จี้ห่าง InpLongTrail_Pts เมื่อกำไรสูงสุดถึง InpLongTrailStart_Pts
+//   mode 0 = เกราะ 3 ขั้น / 1 = วิ่งยาว: ไล่จี้ห่าง InpLongTrail_Pts เมื่อกำไรสูงสุดถึง InpLongTrailStart_Pts (ไม่มีเกราะ)
 double ShieldSL(int dir, double entry, double mfe, double bid, double ask, int mode, int &lv) {
    double lock;
    if(mode == 0) { lv = LockOf(mfe, lock); return (lv > 0) ? entry + dir * lock : 0.0; }
-   lv = 0;
-   double sl = 0.0;
-   if(InpLock1_Trig_Pts > 0.0 && mfe >= PtsToPrice(InpLock1_Trig_Pts)) { sl = entry + dir * PtsToPrice(InpLock1_Pts); lv = 1; }
-   if(InpLongTrailStart_Pts > 0.0 && mfe >= PtsToPrice(InpLongTrailStart_Pts)) {
-      double t = (dir == 1) ? bid - PtsToPrice(InpLongTrail_Pts) : ask + PtsToPrice(InpLongTrail_Pts);
-      if(sl == 0.0 || SLBetter(dir, t, sl)) { sl = t; lv = 4; }
-   }
-   return sl;
+   lv = 0;   // โหมดวิ่งยาว: ไม่ใช้เกราะ 3 ขั้น — ไล่จี้อย่างเดียว (v14.92)
+   if(InpLongTrailStart_Pts <= 0.0 || mfe < PtsToPrice(InpLongTrailStart_Pts)) return 0.0;
+   lv = 4;
+   return (dir == 1) ? bid - PtsToPrice(InpLongTrail_Pts) : ask + PtsToPrice(InpLongTrail_Pts);
 }
 
-// เข้าโหมดวิ่งยาวได้ไหม: T5 / T2-T4 ที่เกี่ยวฝั่งเดียว (ไม่ใช่ขาที่ 2 ของชุดที่เกี่ยวทั้งคู่) + กำไรสูงสุดถึงเกราะขั้น 1
+// เข้าโหมดวิ่งยาวได้ไหม: ไม้ที่เข้าเงื่อนไข + กำไรสูงสุดถึง InpLongMode_Pts
 bool LongModeDue(int sys, bool both, double mfe) {
-   return (sys == 1 || sys == 2) && !both && InpLock1_Trig_Pts > 0.0 && mfe >= PtsToPrice(InpLock1_Trig_Pts);
+   return LongEligible(sys, both) && InpLongMode_Pts > 0.0 && mfe >= PtsToPrice(InpLongMode_Pts);
+}
+
+// ไม้ที่เข้าเงื่อนไขโหมดวิ่งยาว (ไม่ใช้เกราะ 3 ขั้นเลย): T5 / T2-T4 ที่ไม่ใช่ขาสวนที่เกี่ยวหลังขาตาม
+bool LongEligible(int sys, bool both) { return sys == 2 || (sys == 1 && !both); }
+
+// ขาตามที่เกี่ยวหลังขาสวน: SL = ราคาเปิดแท่งสัญญาณ (o0) → ผิดฝั่ง = ราคาเปิดแท่งก่อนหน้า (o1) → ผิดฝั่งอีก = ราคา Stop ของขาสวน (fb)
+double TrendFlipSL(int dir, double entry, double o0, double o1, double fb) {
+   if(o0 > 0.0 && (dir == 1 ? o0 < entry : o0 > entry)) return o0;
+   if(o1 > 0.0 && (dir == 1 ? o1 < entry : o1 > entry)) return o1;
+   return fb;
 }
 
 // เกราะกำไร 3 ขั้น (ใช้ร่วมกัน): ขั้นสูงสุดที่กำไรสูงสุด mfe ถึง → lv (0 = ยังไม่ถึง) + ระยะล็อกจากราคาเข้า (ราคา)
@@ -1401,7 +1412,7 @@ void CloseAllPositions() {
    }
 }
 
-int PosMonGet(ulong tk, long open_msc, long now_msc, double prof, int sys, double sl_prof, bool is_trend, ulong pos_id) {
+int PosMonGet(ulong tk, long open_msc, long now_msc, double prof, int sys, int dir, double open_px, double sl, bool is_trend, ulong pos_id) {
    for(int i = ArraySize(g_pm) - 1; i >= 0; i--) if(g_pm[i].tk == tk) return i;
    int n = ArraySize(g_pm);
    ArrayResize(g_pm, n + 1);
@@ -1413,25 +1424,61 @@ int PosMonGet(ulong tk, long open_msc, long now_msc, double prof, int sys, doubl
    g_pm[n].lock_on  = 0;
    g_pm[n].next_try = 0;
    g_pm[n].sys      = sys;
-   g_pm[n].both     = (sys == 1) && SetOtherFilled(pos_id, is_trend);   // รีสตาร์ท: อ่านจากประวัติ
+   g_pm[n].both     = false;
+   g_pm[n].role     = 0;
    g_pm[n].want_sl  = 0.0;
+   g_pm[n].close_tk = 0;
    g_pm[n].last_mod = 0;
-   // รีสตาร์ท: SL อยู่ฝั่งกำไรถึงเกราะขั้น 1 แล้ว = อยู่ในโหมดวิ่งยาว
-   g_pm[n].mode     = (sys != 3 && !g_pm[n].both && InpLock1_Trig_Pts > 0.0 && sl_prof >= PtsToPrice(InpLock1_Pts) - _Point) ? 1 : 0;
+   g_pm[n].mode     = 0;
+   if(sys == 1) {   // บทบาทของขาชุด T2-T4 จากลำดับการเกี่ยวในประวัติ (ทนการรีสตาร์ท)
+      double   opx;
+      ulong    opos;
+      datetime st;
+      int role = SetRoleInfo(pos_id, is_trend, open_msc, opx, opos, st);
+      g_pm[n].role = role;
+      if(role != 0) {
+         double want = opx;
+         if(role == 1) {
+            int sh = iBarShift(_Symbol, InpZ_Timeframe, st, false);
+            want = TrendFlipSL(dir, open_px, (sh >= 0) ? iOpen(_Symbol, InpZ_Timeframe, sh) : 0.0, (sh >= 0) ? iOpen(_Symbol, InpZ_Timeframe, sh + 1) : 0.0, opx);
+            g_pm[n].mode = 1;
+         } else g_pm[n].both = true;
+         g_pm[n].close_tk = opos;
+         // ตั้ง SL ใหม่เฉพาะเมื่อ SL ยังเป็นค่าตอนวางออเดอร์ (รีสตาร์ทหลังตั้ง / ไล่จี้แล้ว = ไม่ทับ)
+         double sl0 = HistoryOrderSelect(pos_id) ? HistoryOrderGetDouble(pos_id, ORDER_SL) : 0.0;
+         if(want > 0.0 && (sl0 <= 0.0 || MathAbs(sl - sl0) < _Point * 0.5)) g_pm[n].want_sl = want;
+         PrintFormat("🔁 #%I64u ชุด T2-T4 %s → SL %s%s", tk,
+                     (role == 1 ? "ขาตามเกี่ยวหลังขาสวน = เทรนด์ตามน้ำ (โหมดวิ่งยาว)" : "ขาสวนเกี่ยวหลังขาตาม (เกราะ 3 ขั้น)"),
+                     DoubleToString(want, _Digits), (g_pm[n].want_sl > 0.0 ? "" : " (SL ถูกแก้ไปแล้ว ไม่ทับ)"));
+      }
+   }
+   // รีสตาร์ท: ประมาณกำไรสูงสุดจากแท่ง M1 ตั้งแต่เข้า → โหมดวิ่งยาวของขาเดี่ยว / T5
+   g_pm[n].mfe = MathMax(g_pm[n].mfe, MfeSince(dir, open_px, (datetime)(open_msc / 1000)));
+   if(g_pm[n].mode == 0 && LongModeDue(sys, g_pm[n].both, g_pm[n].mfe)) g_pm[n].mode = 1;
    return n;
 }
 
-// ราคาของออเดอร์ที่เปิดไม้ (ราคา Stop) จากประวัติ — ทนการรีสตาร์ท (0 = อ่านไม่ได้)
-double OrderPriceOfPosition(ulong pos_id) {
-   if(!HistoryOrderSelect(pos_id)) return 0.0;
-   return HistoryOrderGetDouble(pos_id, ORDER_PRICE_OPEN);
+// กำไรสูงสุดโดยประมาณจากแท่ง M1 หลังนาทีที่เข้า (ใช้ตอนเริ่มติดตามไม้ที่ถือมานานกว่า 2 นาที, 0 = ไม่มีข้อมูล)
+double MfeSince(int dir, double open_px, datetime opened) {
+   datetime now  = ServerNow();
+   datetime from = (datetime)((long)opened - (long)opened % 60 + 60);
+   if(now - opened < 120 || from >= now) return 0.0;
+   double v[];
+   if(dir == 1) { if(CopyHigh(_Symbol, PERIOD_M1, from, now, v) <= 0) return 0.0; return MathMax(0.0, v[ArrayMaximum(v)] - open_px); }
+   if(CopyLow(_Symbol, PERIOD_M1, from, now, v) <= 0) return 0.0;
+   return MathMax(0.0, open_px - v[ArrayMinimum(v)]);
 }
 
 // ขาชุด T2-T4 นี้ อีกฝั่งเคยถูกเกี่ยวไหม: หาดีลเปิดของ EA ชนิดตรงข้าม ที่ออเดอร์วางพร้อมกัน (±5 วิ)
-bool SetOtherFilled(ulong pos_id, bool is_trend) {
-   if(!HistoryOrderSelect(pos_id)) return false;
+// บทบาทของขาชุด T2-T4: อีกขาของชุดเดียวกัน (ออเดอร์วางพร้อมกัน ±5 วิ) ถูกเกี่ยวก่อนขานี้ไหม (ยังถือ / ปิดแล้ว ก็นับ)
+//   คืน 0 = ขาเดี่ยว / 1 = ขาตามที่เกี่ยวหลังขาสวน / 2 = ขาสวนที่เกี่ยวหลังขาตาม
+//   other_px = ราคา Stop ของอีกขา, other_pos = ตั๋วไม้ของอีกขา, setup_t = เวลาวางชุด
+int SetRoleInfo(ulong pos_id, bool is_trend, long my_msc, double &other_px, ulong &other_pos, datetime &setup_t) {
+   other_px = 0.0; other_pos = 0; setup_t = 0;
+   if(!HistoryOrderSelect(pos_id)) return 0;
    long setup = HistoryOrderGetInteger(pos_id, ORDER_TIME_SETUP);
-   if(!HistorySelect((datetime)(setup - 10), ServerNow() + 60)) return false;
+   setup_t = (datetime)setup;
+   if(!HistorySelect((datetime)(setup - 10), ServerNow() + 60)) return 0;
    for(int i = 0; i < HistoryDealsTotal(); i++) {
       ulong d = HistoryDealGetTicket(i);
       if(d == 0 || !IsOurDeal(d, DEAL_ENTRY_IN)) continue;
@@ -1439,9 +1486,14 @@ bool SetOtherFilled(ulong pos_id, bool is_trend) {
       if(SysOfComment(c) != 1 || ((StringFind(c, " F ") >= 0) == is_trend)) continue;
       ulong o = (ulong)HistoryDealGetInteger(d, DEAL_ORDER);
       if(o == pos_id || !HistoryOrderSelect(o)) continue;
-      if(MathAbs(HistoryOrderGetInteger(o, ORDER_TIME_SETUP) - setup) <= 5) return true;
+      if(MathAbs(HistoryOrderGetInteger(o, ORDER_TIME_SETUP) - setup) > 5) continue;
+      long dm = HistoryDealGetInteger(d, DEAL_TIME_MSC);
+      if(dm > my_msc || (dm == my_msc && o > pos_id)) continue;   // อีกขาเกี่ยวทีหลัง → ขานี้คือขาแรก
+      other_px  = HistoryOrderGetDouble(o, ORDER_PRICE_OPEN);
+      other_pos = (ulong)HistoryDealGetInteger(d, DEAL_POSITION_ID);
+      return is_trend ? 1 : 2;
    }
-   return false;
+   return 0;
 }
 
 void PosMonPrune() {
@@ -1496,35 +1548,7 @@ void ManageOrders(datetime now, int ts, long now_msc) {
    double freeze = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL) * _Point;
    PosMonPrune();
 
-   // 2) ชุด T2-T4 ถูกเกี่ยวทั้ง 2 ขา → ขาแรกปิดทันที (SL ใหม่ = ราคา Stop ของขาที่ 2 = ราคาตอนนี้), ขาที่ 2 SL = ราคา Stop ของขาแรก
-   ulong tkc = 0, tkf = 0;
-   long  oc = 0, of = 0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--) {
-      ulong t = PositionGetTicket(i);
-      if(t == 0 || !IsOurPosition()) continue;
-      string c = PositionGetString(POSITION_COMMENT);
-      if(SysOfComment(c) != 1) continue;
-      if(StringFind(c, " F ") >= 0) { tkf = t; of = PositionGetInteger(POSITION_TIME_MSC); }
-      else                          { tkc = t; oc = PositionGetInteger(POSITION_TIME_MSC); }
-   }
-   if(tkc != 0 && tkf != 0 && now >= g_del_retry) {
-      ulong first  = (oc <= of) ? tkc : tkf;
-      ulong second = (first == tkc) ? tkf : tkc;
-      if(PositionSelectByTicket(first)) {
-         double px1 = OrderPriceOfPosition((ulong)PositionGetInteger(POSITION_IDENTIFIER));
-         if(trade.PositionClose(first)) {
-            g_both_tk = second; g_both_sl = px1;
-            g_last_status = StringFormat("🔁 ชุด T2-T4 ถูกเกี่ยวทั้ง 2 ขา → ปิดขาแรก #%I64u | ขาที่ 2 #%I64u SL → ราคา Stop ของขาแรก %s",
-                                         first, second, DoubleToString(px1, _Digits));
-            Print(g_last_status);
-         } else {
-            g_del_retry = now + 1;
-            PrintFormat("❌ ปิดขาแรก #%I64u ไม่สำเร็จ: %u %s (จะลองใหม่)", first, trade.ResultRetcode(), trade.ResultRetcodeDescription());
-         }
-      }
-   }
-
-   // 3) ไม้ที่ถือ: กำไรสูงสุด → (S2 = TP / SL ที่โบรกเท่านั้น) → SL ขาที่ 2 → โหมดวิ่งยาว → ตัดจบตามเวลา → เกราะ / ไล่จี้
+   // 2) ไม้ที่ถือ: กำไรสูงสุด → (S2 = TP / SL ที่โบรกเท่านั้น) → SL ขาที่ 2 → โหมดวิ่งยาว → ตัดจบตามเวลา → เกราะ / ไล่จี้
    for(int i = PositionsTotal() - 1; i >= 0; i--) {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0 || !IsOurPosition()) continue;
@@ -1536,32 +1560,39 @@ void ManageOrders(datetime now, int ts, long now_msc) {
       string   cmt    = PositionGetString(POSITION_COMMENT);
       int      sys    = SysOfComment(cmt);
       double   prof   = (dir == 1) ? (bid - open) : (open - ask);
-      double   slp    = (sl > 0.0) ? dir * (sl - open) : -1.0;
       string   kind   = KindFromComment(cmt);
-      int      k      = PosMonGet(ticket, PositionGetInteger(POSITION_TIME_MSC), now_msc, prof, sys, slp, (StringFind(cmt, " F ") >= 0),
+      int      k      = PosMonGet(ticket, PositionGetInteger(POSITION_TIME_MSC), now_msc, prof, sys, dir, open, sl, (StringFind(cmt, " F ") >= 0),
                                   (ulong)PositionGetInteger(POSITION_IDENTIFIER));
       if(prof > g_pm[k].mfe) { g_pm[k].mfe = prof; g_pm[k].mfe_msc = now_msc; }
       if(sys == 3) continue;                       // S2: TP / SL ที่โบรกเท่านั้น
       if(now_msc < g_pm[k].next_try) continue;
       if(!PositionSelectByTicket(ticket)) continue;   // PosMonGet อาจเปลี่ยนการเลือกประวัติ → เลือกไม้ใหม่
 
-      if(ticket == g_both_tk) { g_pm[k].both = true; g_pm[k].mode = 0; g_pm[k].want_sl = g_both_sl; g_both_tk = 0; }
-      if(g_pm[k].want_sl > 0.0) {   // ขาที่ 2: SL = ราคา Stop ของขาแรก
+      if(g_pm[k].close_tk != 0) {   // ขาแรกของชุดยังถืออยู่ → ปิดทันที
+         ulong ct = g_pm[k].close_tk;
+         if(PositionSelectByTicket(ct)) {
+            if(trade.PositionClose(ct)) PrintFormat("🔁 ปิดขาแรก #%I64u (ขาที่ 2 #%I64u ถูกเกี่ยว)", ct, ticket);
+            else { g_pm[k].next_try = now_msc + 300; PrintFormat("❌ ปิดขาแรก #%I64u ไม่สำเร็จ: %u %s (จะลองใหม่)", ct, trade.ResultRetcode(), trade.ResultRetcodeDescription()); continue; }
+         }
+         g_pm[k].close_tk = 0;
+         if(!PositionSelectByTicket(ticket)) continue;
+      }
+      if(g_pm[k].want_sl > 0.0) {   // ขาที่ 2: SL ใหม่ (ราคาเปิดแท่ง / ราคา Stop ของขาแรก)
          double want = ND(g_pm[k].want_sl);
          if(MathAbs(want - sl) < _Point * 0.5) { g_pm[k].want_sl = 0.0; }
          else if(dir == 1 ? (bid <= want) : (ask >= want)) {          // ราคาเลย SL ไปแล้ว → ปิดเลย
-            if(trade.PositionClose(ticket)) { PrintFormat("🔁 #%I64u ขาที่ 2 ราคาเลยราคา Stop ของขาแรกแล้ว → ปิด", ticket); continue; }
+            if(trade.PositionClose(ticket)) { PrintFormat("🔁 #%I64u ขาที่ 2 ราคาเลย SL ใหม่ไปแล้ว → ปิด", ticket); continue; }
             g_pm[k].next_try = now_msc + 300; continue;
          }
          else if(dir == 1 ? (bid - want >= stops) : (want - ask >= stops)) {
-            if(trade.PositionModify(ticket, want, tp)) { g_pm[k].want_sl = 0.0; sl = want; PrintFormat("🔁 #%I64u ขาที่ 2: SL → %s (ราคา Stop ของขาแรก)", ticket, DoubleToString(want, _Digits)); }
+            if(trade.PositionModify(ticket, want, tp)) { g_pm[k].want_sl = 0.0; sl = want; PrintFormat("🔁 #%I64u ขาที่ 2: SL → %s", ticket, DoubleToString(want, _Digits)); }
             else { g_pm[k].next_try = now_msc + 500; continue; }
          }
       }
       if(g_pm[k].mode == 0 && LongModeDue(sys, g_pm[k].both, g_pm[k].mfe)) {   // โหมดวิ่งยาว
          g_pm[k].mode = 1;
-         g_last_status = StringFormat("🏃 #%I64u (%s) กำไรสูงสุด %.0f → โหมดวิ่งยาว: SL ทุน +%.0f, ตัดจบ %d แท่ง, ไล่จี้ห่าง %.0f เมื่อกำไรถึง %.0f",
-                                      ticket, kind, PriceToPts(g_pm[k].mfe), InpLock1_Pts, InpLongExitBars, InpLongTrail_Pts, InpLongTrailStart_Pts);
+         g_last_status = StringFormat("🏃 #%I64u (%s) กำไรสูงสุด %.0f → โหมดวิ่งยาว: ตัดจบ %d แท่ง, ไล่จี้ห่าง %.0f เมื่อกำไรถึง %.0f (ไม่ใช้เกราะ)",
+                                      ticket, kind, PriceToPts(g_pm[k].mfe), InpLongExitBars, InpLongTrail_Pts, InpLongTrailStart_Pts);
          Print(g_last_status);
          if(sys == 1) DeletePendings("ขาที่ถูกเกี่ยวเข้าโหมดวิ่งยาว");
       }
@@ -1579,8 +1610,9 @@ void ManageOrders(datetime now, int ts, long now_msc) {
          continue;
       }
 
+      if(g_pm[k].mode == 0 && LongEligible(sys, g_pm[k].both)) continue;   // ไม้ที่เข้าเงื่อนไขวิ่งยาว: ไม่ใช้เกราะ 3 ขั้น
       int    lv;
-      double target = ShieldSL(dir, open, g_pm[k].mfe, bid, ask, g_pm[k].mode, lv);   // เกราะ / ไล่จี้
+      double target = ShieldSL(dir, open, g_pm[k].mfe, bid, ask, g_pm[k].mode, lv);   // เกราะ (ขาสวนหลังขาตาม) / ไล่จี้ (วิ่งยาว)
       if(lv == 0) continue;
       target = ND(target);
       if(!SLBetter(dir, target, sl)) continue;
@@ -2199,7 +2231,9 @@ struct RTrade {
    int      lock_lv;       // ขั้นเกราะที่ขยับ SL แล้ว (0 = ยัง)
    long     lock_on_msc;   // เวลาที่เกราะขยับ SL ครั้งแรก (0 = ยัง)
    int      mode;          // 0 = ปกติ / 1 = วิ่งยาว (T2-T4 เกี่ยวฝั่งเดียว / T5)
-   bool     both;          // T2-T4: ขาที่ 2 ของชุดที่ถูกเกี่ยวทั้ง 2 ขา
+   bool     both;          // T2-T4: ขาสวนที่ถูกเกี่ยวหลังขาตาม (ใช้เกราะ 3 ขั้น)
+   int      role;          // T2-T4: 0 = ขาเดี่ยว / 1 = ขาตามที่เกี่ยวหลังขาสวน / 2 = ขาสวนที่เกี่ยวหลังขาตาม
+   double   bar_open, bar_open1;   // ราคาเปิดแท่งสัญญาณ / แท่งก่อนหน้า (SL ของขาตามหลังขาสวน)
    long     last_mod;      // ขยับ SL ไล่จี้ล่าสุด (msc)
    double   sl0;           // SL ตอนเปิดไม้ (ก่อนขยับโล่)
    double   peak;          // High (SELL) / Low (BUY) ของแท่ง ณ ตอนเปิดไม้ ที่ใช้วาง SL
@@ -2369,7 +2403,9 @@ int ReplayAddLeg(int sig_dir, int kind, int stage, long msc, double order_px, do
    g_rt[i].sl_mode  = (kind == 1) ? SLM_TREND : ((kind == 2) ? SLM_FIXED : ((kind == 3) ? SLM_S2 : SLM_PEAK));
    g_rt[i].mfe_msc  = 0;
    g_rt[i].lock_lv  = 0; g_rt[i].lock_on_msc = 0;
-   g_rt[i].mode     = 0; g_rt[i].both = false; g_rt[i].last_mod = 0;
+   g_rt[i].mode     = 0; g_rt[i].both = false; g_rt[i].last_mod = 0; g_rt[i].role = 0;
+   g_rt[i].bar_open  = (g_rp_b >= 0) ? g_rr[g_rp_b].open : 0.0;
+   g_rt[i].bar_open1 = (g_rp_b >= 1) ? g_rr[g_rp_b - 1].open : 0.0;
    g_rt[i].sig_dir  = sig_dir;
    g_rt[i].msc_sig  = msc;
    g_rt[i].p_order  = order_px;
@@ -2599,14 +2635,25 @@ void ReplayManageTick(long msc, double bid, double ask) {
          bool hit = (d == 1) ? (ask >= g_rt[i].p_order) : (bid <= g_rt[i].p_order);
          if(!hit) continue;
          ReplayFill(i, msc, (d == 1) ? ask : bid);
-         int o = (m < 2) ? legs[1 - m] : -1;   // ชุด T2-T4 ถูกเกี่ยวทั้ง 2 ขา → ขาแรกปิดทันที, ขานี้ SL = ราคา Stop ของขาแรก
-         if(o >= 0 && g_rt[o].reason == RX_OPEN) {
-            double fo = (g_rt[o].dir == -1) ? (g_rt[o].p_in - ask) : (bid - g_rt[o].p_in);
-            ProfitAvgAdd(o, msc, fo);
-            ReplayClose(o, msc, (g_rt[o].dir == -1) ? ask : bid, RX_FLIP);
-            double sl2 = g_rt[o].p_order;
-            g_rt[i].sl   = (d == 1) ? MathMin(sl2, g_rt[i].p_in - _Point) : MathMax(sl2, g_rt[i].p_in + _Point);
-            g_rt[i].both = true;
+         int o = (m < 2) ? legs[1 - m] : -1;   // ชุด T2-T4: อีกขาถูกเกี่ยวก่อน (ยังถือ / ปิดแล้ว) → ขานี้คือขาที่ 2
+         if(o >= 0 && g_rt[o].msc_in > 0) {
+            if(g_rt[o].reason == RX_OPEN) {   // ขาแรกยังถือ → ปิดทันที
+               double fo = (g_rt[o].dir == -1) ? (g_rt[o].p_in - ask) : (bid - g_rt[o].p_in);
+               ProfitAvgAdd(o, msc, fo);
+               ReplayClose(o, msc, (g_rt[o].dir == -1) ? ask : bid, RX_FLIP);
+            }
+            double sl2;
+            if(g_rt[i].kind == 1) {   // ขาตามหลังขาสวน = เทรนด์ตามน้ำ → SL ราคาเปิดแท่ง + โหมดวิ่งยาวทันที
+               sl2 = TrendFlipSL(d, g_rt[i].p_in, g_rt[i].bar_open, g_rt[i].bar_open1, g_rt[o].p_order);
+               g_rt[i].role     = 1;
+               g_rt[i].mode     = 1;
+               g_rt[i].exit_msc = (long)ExitTimeOfN((datetime)(msc / 1000), InpLongExitBars) * 1000;
+            } else {                  // ขาสวนหลังขาตาม → SL ราคา Stop ของขาตาม + เกราะ 3 ขั้น
+               sl2 = g_rt[o].p_order;
+               g_rt[i].role = 2;
+               g_rt[i].both = true;
+            }
+            g_rt[i].sl = (d == 1) ? MathMin(sl2, g_rt[i].p_in - _Point) : MathMax(sl2, g_rt[i].p_in + _Point);
          }
       }
       if(g_rt[i].reason != RX_OPEN) continue;
@@ -2634,6 +2681,7 @@ void ReplayManageTick(long msc, double bid, double ask) {
          if(o >= 0 && g_rt[o].reason == RX_PEND) { g_rt[o].reason = RX_EXP; g_rt[o].msc_out = msc; }
       }
       if(msc >= g_rt[i].exit_msc) { ReplayClose(i, msc, px, RX_TIME); continue; }
+      if(g_rt[i].mode == 0 && LongEligible(sys, g_rt[i].both)) continue;   // ไม้ที่เข้าเงื่อนไขวิ่งยาว: ไม่ใช้เกราะ 3 ขั้น
       int    lv;
       double target = ShieldSL(d, g_rt[i].p_in, g_rt[i].mfe, bid, ask, g_rt[i].mode, lv);   // เกราะ / ไล่จี้ (ขยับทางเดียว)
       if(lv == 0 || !SLBetter(d, target, g_rt[i].sl)) continue;
@@ -2980,7 +3028,7 @@ void ReplayWriteCSV(int done) {
                       "time_in,side,tier,max_tier,bar_seq,lot,price_in,sl_peak,sl_init_pts,z_reg,z_sma,ext_zreg,ext_zsma,z_float," +
                       "spd_any_t2_sec,spd_any_t3_sec,spd_any_t4_sec,spd_any_from_open,spd_any_rate_t2,k2,k2_max," +
                       "zreg_bar_open,zreg_bar_high,zreg_bar_low,zsma_bar_open,zsma_bar_high,zsma_bar_low," +
-                      "time_out,exit,hold_sec,pnl_pts,usd,profit_min_pts,profit_max_pts,profit_avg_pts,profit_max_sec,lock_on_sec,lock_level,long_mode,both_filled,tp_price\r\n");
+                      "time_out,exit,hold_sec,pnl_pts,usd,profit_min_pts,profit_max_pts,profit_avg_pts,profit_max_sec,lock_on_sec,lock_level,long_mode,fill_role,tp_price\r\n");
    for(int i = 0; i < ArraySize(g_rt); i++) {
       if(!RDone(g_rt[i].reason)) continue;
       string ln = StringFormat("%d,%s,%s,%s,%s,%s,", g_rt[i].set_id, (g_rt[i].kind == 0 ? "COUNTER" : (g_rt[i].kind == 1 ? "TREND" : (g_rt[i].kind == 2 ? "T5_MARKET" : "S2_MARKET"))),
@@ -3000,7 +3048,7 @@ void ReplayWriteCSV(int done) {
                          (int)((g_rt[i].msc_out - g_rt[i].msc_in) / 1000), g_rt[i].pnl, g_rt[i].usd,
                          PriceToPts(g_rt[i].mae), PriceToPts(g_rt[i].mfe), ProfitAvgPts(i), (int)((g_rt[i].mfe_msc - g_rt[i].msc_in) / 1000),
                          (g_rt[i].lock_on_msc > 0 ? IntegerToString((g_rt[i].lock_on_msc - g_rt[i].msc_in) / 1000) : ""), g_rt[i].lock_lv,
-                         g_rt[i].mode, (g_rt[i].both ? 1 : 0), (g_rt[i].tp > 0.0 ? DoubleToString(g_rt[i].tp, _Digits) : ""));
+                         g_rt[i].mode, g_rt[i].role, (g_rt[i].tp > 0.0 ? DoubleToString(g_rt[i].tp, _Digits) : ""));
       FileWriteString(h, ln);
    }
    FileClose(h);
@@ -3365,10 +3413,13 @@ string PositionLines(double bid, double ask, datetime now) {
          st = StringFormat(" | สูงสุด %+.0f", PriceToPts(g_pm[k].mfe));
          if(sys == 3) break;
          if(mode == 1) st += " | 🏃 วิ่งยาว";
-         if(g_pm[k].both) st += " | 🔁 ขาที่ 2";
+         if(g_pm[k].role == 1) st += " | 📈 ตามน้ำหลังขาสวนถูกตัด";
+         if(g_pm[k].role == 2) st += " | 🔁 ขาสวนหลังขาตาม";
          double lk = (sl > 0.0) ? (is_buy ? PriceToPts(sl - open) : PriceToPts(open - sl)) : 0.0;
          if(g_pm[k].lock_lv == 4)    st += StringFormat(" | 🛡️ ไล่จี้ ล็อก %+.0f", lk);
          else if(g_pm[k].lock_lv > 0) st += StringFormat(" | 🛡️ เกราะขั้น %d ล็อก %+.0f", g_pm[k].lock_lv, lk);
+         else if(mode == 1)                     st += StringFormat(" | ไล่จี้เมื่อกำไรถึง %.0f", InpLongTrailStart_Pts);
+         else if(LongEligible(sys, g_pm[k].both)) st += StringFormat(" | วิ่งยาวเมื่อกำไรถึง %.0f", InpLongMode_Pts);
          else st += StringFormat(" | เกราะเมื่อกำไรถึง %.0f", InpLock1_Trig_Pts);
          break;
       }
@@ -3408,12 +3459,12 @@ void UpdateDashboard(int ts, datetime now) {
    string news_str = NextNewsText(now);
 
    long   now_msc = NowMsc();
-   string msg = StringFormat("=== 📊 7-Lines Counter EA v14.91 (%s T2 ลอย>%.2f Z>%.1f %d วิ | %s T3 >%.1f %d วิ | %s T4 >%.1f %d วิ | ยอดใหม่ ≥%.0f | Stop ±%.0f: สวน SL ยอด±%.0f / ตาม SL %.0f | %s T5 แตะ>%.1f → แท่งใหม่ SL %.0f | %s S2 แท่งก่อน>%.1f ไส้ %d วิ SL ยอด (%.0f–%.0f) TP %.1fR | ตัดจบ %d แท่ง | เกราะ %.0f→+%.0f / %.0f→+%.0f / %.0f→+%.0f | วิ่งยาว: ไล่จี้ %.0f เมื่อ ≥%.0f ตัดจบ %d แท่ง) ===\n",
+   string msg = StringFormat("=== 📊 7-Lines Counter EA v14.92 (%s T2 ลอย>%.2f Z>%.1f %d วิ | %s T3 >%.1f %d วิ | %s T4 >%.1f %d วิ | ยอดใหม่ ≥%.0f | Stop ±%.0f: สวน SL ยอด±%.0f / ตาม SL %.0f | %s T5 แตะ>%.1f → แท่งใหม่ SL %.0f | %s S2 แท่งก่อน>%.1f ไส้ %d วิ SL ยอด (%.0f–%.0f) TP %.1fR | ตัดจบ %d แท่ง | Stop อายุ %d นาที | เกราะ (ขาสวนหลังขาตาม) %.0f→+%.0f / %.0f→+%.0f / %.0f→+%.0f | วิ่งยาว ≥%.0f (ไม่มีเกราะ): ไล่จี้ %.0f เมื่อ ≥%.0f ตัดจบ %d แท่ง) ===\n",
                              (g_en[2] ? "✅" : "⛔"), InpFloatMin, InpT2_Z, InpT2_Sec, (g_en[3] ? "✅" : "⛔"), InpT3_Z, InpT3_Sec,
                              (g_en[4] ? "✅" : "⛔"), InpT4_Z, InpT4_Sec, InpNoNewExt_Pts, InpStopDist_Pts, InpSLPeak_Pts, InpTrendSL_Pts,
                              (g_en[5] ? "✅" : "⛔"), InpT5_Z, InpT5_SL_Pts, (g_en[6] ? "✅" : "⛔"), InpS2_PrevZ, InpS2_NoNewSec, InpS2_MinSL_Pts, InpS2_MaxSL_Pts, InpS2_RR,
-                             InpExitBars, InpLock1_Trig_Pts, InpLock1_Pts, InpLock2_Trig_Pts, InpLock2_Pts, InpLock3_Trig_Pts, InpLock3_Pts,
-                             InpLongTrail_Pts, InpLongTrailStart_Pts, InpLongExitBars);
+                             InpExitBars, InpStopExpire_Min, InpLock1_Trig_Pts, InpLock1_Pts, InpLock2_Trig_Pts, InpLock2_Pts, InpLock3_Trig_Pts, InpLock3_Pts,
+                             InpLongMode_Pts, InpLongTrail_Pts, InpLongTrailStart_Pts, InpLongExitBars);
    msg += StringFormat("Z (%s, %d) : %s\n", EnumToString(InpZ_Timeframe), InpZ_Period, z_str);
    if(news_str != "") msg += "ข่าว : " + news_str + "\n";
    msg += "SELL : " + WatchText(g_wsell, true,  now_msc) + "\n";
@@ -3841,7 +3892,7 @@ int OnInit() {
       InpStopExpire_Min < 1 || InpLock1_Trig_Pts < 0.0 || InpLock2_Trig_Pts < 0.0 || InpLock3_Trig_Pts < 0.0 ||
       (InpLock1_Trig_Pts > 0.0 && InpLock1_Pts >= InpLock1_Trig_Pts) || (InpLock2_Trig_Pts > 0.0 && InpLock2_Pts >= InpLock2_Trig_Pts) ||
       (InpLock3_Trig_Pts > 0.0 && InpLock3_Pts >= InpLock3_Trig_Pts) ||
-      InpLongTrailStart_Pts < 0.0 || InpLongTrail_Pts <= 0.0 || InpLongExitBars < 0 || InpTrailStep_Pts < 0.0) {
+      InpLongMode_Pts < 0.0 || InpLongTrailStart_Pts < 0.0 || InpLongTrail_Pts <= 0.0 || InpLongExitBars < 0 || InpTrailStep_Pts < 0.0) {
       Print("❌ ระยะ Stop / SL / เพดาน SL / SL ตามน้ำ / โหมดวิ่งยาว / อายุ Stop / เกราะ (ระยะล็อกต้องน้อยกว่ากำไรที่สั่งขยับ) / จำนวนแท่งตัดจบ ไม่ถูกต้อง");
       return(INIT_PARAMETERS_INCORRECT);
    }
@@ -3880,7 +3931,6 @@ int OnInit() {
    S2Clear(g_s2);
    g_s2_next_try   = 0;
    g_set_bar       = 0;
-   g_both_tk       = 0; g_both_sl = 0.0;
    g_bar_changed   = false;
    g_last_tick_msc = 0;
    g_zc.ok         = false;
