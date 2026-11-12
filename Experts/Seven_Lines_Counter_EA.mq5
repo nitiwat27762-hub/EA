@@ -31,7 +31,7 @@
 //
 // 📋 ชุด S2 (v14.80, จาก Z3 EA): แท่งปิดล่าสุด Z ตัวใดตัวหนึ่งที่ High > 2.5 → ราคาเข้าไส้บน [max(Open, Close), High] = สแตนบาย
 //    → Bid ไม่ทำ High ใหม่ของแท่งปัจจุบัน 10 วิ + High แท่งปัจจุบัน < High แท่งปิดล่าสุด → SELL Market (BUY กลับทิศ)
-//    SL = High แท่งปิดล่าสุด + 2,000 | ราคาขึ้นเกิน High แท่งปิดล่าสุด = ยกเลิกทั้งแท่ง | ครั้งเดียวต่อแท่ง, ทีละ 1 ไม้, Lot 0.02
+//    SL คงที่ 2,000 จุดจากราคาเข้า (v14.81) | ราคาขึ้นเกิน High แท่งปิดล่าสุด = ยกเลิกทั้งแท่ง | ครั้งเดียวต่อแท่ง, ทีละ 1 ไม้, Lot 0.02
 //
 // 📋 ทางออก (ทุกชุด, ไม่มี TP)
 //  • ตัดจบที่ราคาปิดของแท่งที่ 2 หลังแท่งที่ออเดอร์ถูกเกี่ยว (= tick แรกของแท่งถัดไป)
@@ -58,7 +58,7 @@
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "14.80"
+#property version     "14.81"
 #property description "สวนกลับค่า Z ผิดปกติ 3 ชุดอิสระ (T2-T4 / T5 / S2) สำหรับ XAUUSD (บัญชี Hedging)"
 
 #include <Trade\Trade.mqh>
@@ -91,7 +91,7 @@ input group "=== 1.1 S2 สวนที่ไส้แท่งปิดล่�
 input bool            InpEnableS2          = true;       // เปิดใช้ S2 (ค่าเริ่มต้น — สลับได้ด้วยปุ่มบนกราฟ)
 input double          InpS2_PrevZ          = 2.50;       // S2: แท่งปิดล่าสุด Z ตัวใดตัวหนึ่งที่ High (SELL) / Low (BUY) > ค่านี้
 input int             InpS2_NoNewSec       = 10;         // S2: ไม่มี High (SELL) / Low (BUY) ใหม่ของแท่งปัจจุบันครบกี่วินาที → ยิง
-input double          InpS2_Cut_Pts        = 2000.0;     // S2: SL = High (SELL) / Low (BUY) แท่งปิดล่าสุด ± กี่จุด
+input double          InpS2_SL_Pts         = 2000.0;     // S2: SL คงที่ห่างจากราคาเข้า (จุด)
 input double          InpS2_Lot            = 0.02;       // S2: Lot
 
 input group "=== 2. ออเดอร์ ==="
@@ -779,7 +779,7 @@ double SLPrice(int dir, double bar_hi, double bar_lo) {
 #define SLM_PEAK_CAP  1   // สวน: ห่างเกินเพดาน → ราคาเข้า ± InpCounterMaxSL_Pts
 #define SLM_TREND     2   // ตาม: ราคาเข้า ± InpTrendSL_Pts (v14.80)
 #define SLM_FIXED     4   // T5: ราคาเข้า ± InpT5_SL_Pts
-#define SLM_S2        5   // S2: ยอดแท่งปิดล่าสุด ± InpS2_Cut_Pts
+#define SLM_S2        5   // S2: ราคาเข้า ± InpS2_SL_Pts (v14.81)
 
 // SL ฝั่งสวน (dir = ทิศของไม้): ยอดแท่ง ± InpSLPeak_Pts แต่ห่างจากราคาเข้าไม่เกิน InpCounterMaxSL_Pts
 double CounterSL(int dir, double entry, double bar_hi, double bar_lo, int &mode) {
@@ -804,7 +804,7 @@ string SLModeCode(int m) {
       case SLM_PEAK_CAP:  return "PEAK_CAP";
       case SLM_TREND:     return "TREND_FIXED";
       case SLM_FIXED:     return "FIXED";
-      case SLM_S2:        return "S2_WICK";
+      case SLM_S2:        return "S2_FIXED";
    }
    return "PEAK";
 }
@@ -814,7 +814,7 @@ string SLModeText(int m) {
       case SLM_PEAK_CAP:  return StringFormat("เพดาน %.0f จุดจากราคาเข้า (ยอดแท่ง ± %.0f ห่างเกิน)", InpCounterMaxSL_Pts, InpSLPeak_Pts);
       case SLM_TREND:     return StringFormat("คงที่ %.0f จุดจากราคาเข้า (ตามน้ำ)", InpTrendSL_Pts);
       case SLM_FIXED:     return StringFormat("คงที่ %.0f จุดจากราคาเข้า (T5)", InpT5_SL_Pts);
-      case SLM_S2:        return StringFormat("ยอดแท่งปิดล่าสุด ± %.0f (S2)", InpS2_Cut_Pts);
+      case SLM_S2:        return StringFormat("คงที่ %.0f จุดจากราคาเข้า (S2)", InpS2_SL_Pts);
    }
    return StringFormat("ยอดแท่ง ± %.0f", InpSLPeak_Pts);
 }
@@ -873,7 +873,8 @@ int S2Ready(const S2State &s, long msc) {
    return 0;
 }
 
-double S2SL(const S2State &s, int dir) { return (dir == -1) ? s.p_high + PtsToPrice(InpS2_Cut_Pts) : s.p_low - PtsToPrice(InpS2_Cut_Pts); }
+// S2: SL คงที่ InpS2_SL_Pts จากราคาเข้า (dir = ทิศของไม้)
+double S2SL(int dir, double entry) { return entry - dir * PtsToPrice(InpS2_SL_Pts); }
 
 // ชุด T5: บันทึกการแตะ > InpT5_Z ในแท่ง (แตะทั้ง 2 ฝั่ง = ใช้ฝั่งล่าสุด) — dir = ทิศของไม้สวน
 void T5Touch(int &cur_dir, double &cur_z, double zr, double zs) {
@@ -1078,7 +1079,7 @@ bool PlaceStop(int dir, int stage, string kind, double bid, double ask, double s
    return false;
 }
 
-// S2: Market (dir = ทิศของไม้), SL = ยอดแท่งปิดล่าสุด ± InpS2_Cut_Pts (เคารพ Stops Level), ไม่มี TP — คอมเมนต์ "<InpOrderComment> S2 X2.80"
+// S2: Market (dir = ทิศของไม้), SL คงที่ InpS2_SL_Pts จากราคาเข้า (เคารพ Stops Level), ไม่มี TP — คอมเมนต์ "<InpOrderComment> S2 X2.80"
 bool OpenMarketS2(int dir, double bid, double ask, double sl, double z_ref) {
    double lot   = NormalizeLot(InpS2_Lot);
    double stops = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
@@ -1088,8 +1089,8 @@ bool OpenMarketS2(int dir, double bid, double ask, double sl, double z_ref) {
    bool   ok  = (dir == -1) ? trade.Sell(lot, _Symbol, bid, sl, 0.0, cmt) : trade.Buy(lot, _Symbol, ask, sl, 0.0, cmt);
    uint   rc  = trade.ResultRetcode();
    if(ok && (rc == TRADE_RETCODE_DONE || rc == TRADE_RETCODE_PLACED || rc == TRADE_RETCODE_DONE_PARTIAL)) {
-      PrintFormat("✅ เปิด S2 สวนที่ไส้ %s %.2f lot @ %s | SL %s (ยอดแท่งปิดล่าสุด ± %.0f) | Z ที่ยอดแท่งก่อน %+.2f",
-                  (dir == -1 ? "SELL" : "BUY"), lot, DoubleToString(trade.ResultPrice(), _Digits), DoubleToString(sl, _Digits), InpS2_Cut_Pts, z_ref);
+      PrintFormat("✅ เปิด S2 สวนที่ไส้ %s %.2f lot @ %s | SL %s (คงที่ %.0f จุด) | Z ที่ยอดแท่งก่อน %+.2f",
+                  (dir == -1 ? "SELL" : "BUY"), lot, DoubleToString(trade.ResultPrice(), _Digits), DoubleToString(sl, _Digits), InpS2_SL_Pts, z_ref);
       return true;
    }
    PrintFormat("❌ เปิด S2 %s ไม่สำเร็จ: %u %s", (dir == -1 ? "SELL" : "BUY"), rc, trade.ResultRetcodeDescription());
@@ -1267,7 +1268,7 @@ void LiveS2Step(datetime now, int ts, double bid, double ask, long msc) {
    if(why == "" && !TradeAllowed()) why = "ปิด Algo Trading อยู่";
    if(why != "") { g_s2.done = true; g_last_status = "S2 ครบเวลาแต่ติด: " + why + " → ทิ้งสัญญาณของแท่งนี้"; return; }
    double zref = (d == -1) ? g_s2.p_zhi : g_s2.p_zlo;
-   if(OpenMarketS2(d, bid, ask, S2SL(g_s2, d), zref)) {
+   if(OpenMarketS2(d, bid, ask, S2SL(d, (d == -1) ? bid : ask), zref)) {
       g_s2.done     = true;
       g_last_status = StringFormat("เปิด S2 สวนที่ไส้ %s (Lot %.2f) | Z ที่ยอดแท่งก่อน %+.2f", (d == -1 ? "SELL" : "BUY"), NormalizeLot(InpS2_Lot), zref);
    } else {
@@ -2385,7 +2386,7 @@ void ReplayTimeEvents(long msc) {
          g_rp_s2.done = true;
          if(why != "") ReplayBlock(fire, d, px, "S2: " + why);
          else {
-            int i = ReplayAddLeg(d, 3, 0, fire, px, S2SL(g_rp_s2, d), 0, 0);
+            int i = ReplayAddLeg(d, 3, 0, fire, px, S2SL(d, px), 0, 0);
             g_rt[i].ext_r = (d == -1) ? g_rp_s2.p_zhi : g_rp_s2.p_zlo;
             g_rt[i].ext_s = g_rt[i].ext_r;
             ReplayFill(i, fire, px);
@@ -3179,10 +3180,10 @@ void UpdateDashboard(int ts, datetime now) {
    string news_str = NextNewsText(now);
 
    long   now_msc = NowMsc();
-   string msg = StringFormat("=== 📊 7-Lines Counter EA v14.80 (%s T2 ลอย>%.2f Z>%.1f %d วิ | %s T3 >%.1f %d วิ | %s T4 >%.1f %d วิ | ยอดใหม่ ≥%.0f | Stop ±%.0f: สวน SL ยอด±%.0f / ตาม SL %.0f | %s T5 แตะ>%.1f → แท่งใหม่ SL %.0f | %s S2 แท่งก่อน>%.1f ไส้ %d วิ SL ยอด±%.0f | ตัดจบ %d แท่ง | เกราะ %.0f→+%.0f / %.0f→+%.0f / %.0f→+%.0f) ===\n",
+   string msg = StringFormat("=== 📊 7-Lines Counter EA v14.81 (%s T2 ลอย>%.2f Z>%.1f %d วิ | %s T3 >%.1f %d วิ | %s T4 >%.1f %d วิ | ยอดใหม่ ≥%.0f | Stop ±%.0f: สวน SL ยอด±%.0f / ตาม SL %.0f | %s T5 แตะ>%.1f → แท่งใหม่ SL %.0f | %s S2 แท่งก่อน>%.1f ไส้ %d วิ SL %.0f | ตัดจบ %d แท่ง | เกราะ %.0f→+%.0f / %.0f→+%.0f / %.0f→+%.0f) ===\n",
                              (g_en[2] ? "✅" : "⛔"), InpFloatMin, InpT2_Z, InpT2_Sec, (g_en[3] ? "✅" : "⛔"), InpT3_Z, InpT3_Sec,
                              (g_en[4] ? "✅" : "⛔"), InpT4_Z, InpT4_Sec, InpNoNewExt_Pts, InpStopDist_Pts, InpSLPeak_Pts, InpTrendSL_Pts,
-                             (g_en[5] ? "✅" : "⛔"), InpT5_Z, InpT5_SL_Pts, (g_en[6] ? "✅" : "⛔"), InpS2_PrevZ, InpS2_NoNewSec, InpS2_Cut_Pts,
+                             (g_en[5] ? "✅" : "⛔"), InpT5_Z, InpT5_SL_Pts, (g_en[6] ? "✅" : "⛔"), InpS2_PrevZ, InpS2_NoNewSec, InpS2_SL_Pts,
                              InpExitBars, InpLock1_Trig_Pts, InpLock1_Pts, InpLock2_Trig_Pts, InpLock2_Pts, InpLock3_Trig_Pts, InpLock3_Pts);
    msg += StringFormat("Z (%s, %d) : %s\n", EnumToString(InpZ_Timeframe), InpZ_Period, z_str);
    if(news_str != "") msg += "ข่าว : " + news_str + "\n";
@@ -3602,7 +3603,7 @@ int OnInit() {
    if(InpReplayDays < 1 || InpReplayDays > 60) { Print("❌ InpReplayDays ต้องอยู่ระหว่าง 1-60"); return(INIT_PARAMETERS_INCORRECT); }
    if(InpT2_Z <= 0.0 || InpT3_Z < InpT2_Z || InpT4_Z < InpT3_Z || InpT5_Z < InpT4_Z || InpT4_Sec < 0 || InpT5_RetrySec < 0 || InpT5_SL_Pts <= 0.0 ||
       InpT2_Sec < 0 || InpT3_Sec < 0 || InpNoNewExt_Pts < 0.0 || InpTierLotStep < 0.0 || InpSpeedFromZ < 0.0 ||
-      InpS2_NoNewSec < 0 || InpS2_Cut_Pts <= 0.0 || InpS2_Lot <= 0.0) {
+      InpS2_NoNewSec < 0 || InpS2_SL_Pts <= 0.0 || InpS2_Lot <= 0.0) {
       Print("❌ ค่า Z ระดับวิกฤต (ต้อง T2 ≤ T3 ≤ T4 ≤ T5) / เวลาเฝ้า / ยอดใหม่ / T5 / S2 / Lot ต่อระดับ / จุดเริ่มจับความเร็ว Z ไม่ถูกต้อง");
       return(INIT_PARAMETERS_INCORRECT);
    }
