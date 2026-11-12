@@ -42,6 +42,9 @@
 //    ลบ Stop อีกฝั่งที่รอ (T2-T4) → กำไรสูงสุดถึง 10,000 → ไล่จี้ SL ห่างราคา 8,000 (แทนเกราะขั้น 2-3)
 //  • ปิดทุกไม้ 30 นาทีก่อนตลาดปิดสัปดาห์
 //
+// 🔘 1 ชุด/แท่ง (v14.91, เปิดปิดได้ด้วย InpOneSetPerBar / ปุ่ม "1/แท่ง"): ชุด T2-T4 วางได้ 1 ครั้งต่อแท่ง (นับตอนวางชุด)
+//    T5 (เปิดตอนแท่งใหม่) และ S2 (ครั้งเดียวต่อแท่ง) เป็น 1 ครั้ง/แท่งอยู่แล้วโดยการออกแบบ
+//
 // ⏱️ ค่าชี้วัดการกระชาก (บันทึก / แสดงผลอย่างเดียว ไม่มีผลกับการเทรด)
 //  • เร็ว: จากครั้งล่าสุดที่ Z ตัวใดตัวหนึ่งตัดขึ้นผ่าน 1.5 ในแท่ง → ถึง 2.5 / 3.0 / 3.5 (วินาที, * = นับจากเวลาเปิดแท่ง) + อัตรา Z/วิ
 //  • K2: จำนวนครั้งที่ทำยอดใหม่ของแท่ง ภายใน 60 วิก่อนยอดล่าสุด
@@ -62,7 +65,7 @@
 //  • Dashboard เขียนเฉพาะเมื่อข้อความเปลี่ยน, ไม่วาดอะไรใน Tester แบบไม่เปิด Visual
 //
 #property copyright   "Commander's Quant System"
-#property version     "14.90"
+#property version     "14.91"
 #property description "สวนกลับค่า Z ผิดปกติ 3 ชุดอิสระ (T2-T4 / T5 / S2) สำหรับ XAUUSD (บัญชี Hedging)"
 
 #include <Trade\Trade.mqh>
@@ -77,6 +80,7 @@ input bool            InpEnableT2          = true;       // เปิดใช�
 input bool            InpEnableT3          = true;       // เปิดใช้ T3 (ค่าเริ่มต้น — สลับได้ด้วยปุ่มบนกราฟ)
 input bool            InpEnableT4          = true;       // เปิดใช้ T4 (ค่าเริ่มต้น — สลับได้ด้วยปุ่มบนกราฟ)
 input bool            InpEnableT5          = true;       // เปิดใช้ T5 (ค่าเริ่มต้น — สลับได้ด้วยปุ่มบนกราฟ)
+input bool            InpOneSetPerBar      = true;       // 1 แท่ง (TF ของ Z) วางชุด T2-T4 ได้ 1 ครั้ง (ค่าเริ่มต้น — สลับได้ด้วยปุ่ม "1/แท่ง")
 input double          InpT2_Z              = 2.50;       // T2: Z_reg หรือ Z_SMA ตัวใดตัวหนึ่ง > ค่านี้ (ต้องผ่านแท่งลอยก่อน)
 input int             InpT2_Sec            = 5;          // T2: ยิงเมื่อไม่มียอดราคาใหม่ครบกี่วินาที
 input double          InpT3_Z              = 3.00;       // T3: Z_reg หรือ Z_SMA ตัวใดตัวหนึ่ง > ค่านี้ (ไม่ต้องลอย)
@@ -340,7 +344,8 @@ int        g_lbl_ver        = 0;       // ป้ายบนแท่งเป�
 datetime   g_pn_bar         = 0;       // แท่งที่กล่องรายละเอียดแสดงอยู่ (0 = แท่งปัจจุบัน)
 int        g_pn_side        = -1;      // ฝั่งที่เมาส์ชี้ (−1 = เลือกฝั่งที่ Z สูงกว่า)
 string     g_pn_text        = "";
-bool       g_en[7];                    // ปุ่มบนกราฟ: index 2-4 = ระดับ T2-T4, 5 = ชุด T5, 6 = ชุด S2
+bool       g_en[8];                    // ปุ่มบนกราฟ: index 2-4 = ระดับ T2-T4, 5 = ชุด T5, 6 = ชุด S2, 7 = 1 ชุด/แท่ง
+datetime   g_set_bar        = 0;       // แท่งที่วางชุด T2-T4 ล่าสุด (EA จริง)
 string     g_lay_sig        = "";      // สถานะกราฟตอนจัดป้ายไม้ล่าสุด
 bool       g_bar_changed    = false;   // ขึ้นแท่งใหม่ (TF ของ Z) → ล้างการเฝ้า
 long       g_last_tick_msc  = 0;
@@ -589,6 +594,7 @@ bool RefreshClosedBars() {
       pr.close = c[n - 1];
       S2NewBar(g_s2, t0, c, pr, g_bar0_hi, g_bar0_lo);
       S2RestoreDone();
+      SetBarRestore(t0);
    }
 
    g_zbar_time = t0;
@@ -1253,6 +1259,7 @@ void LiveFire(int dir, int ts, double bid, double ask) {
    bool     okc = PlaceStop( dir, tier, "C", bid, ask, slc, SLModeText(mc), expire, ext_z, pc);
    bool     okf = PlaceStop(-dir, tier, "F", bid, ask, slf, SLModeText(mf), expire, ext_z, pf);
    if(okc || okf) {
+      g_set_bar     = g_zbar_time;
       g_last_status = StringFormat("วางชุด %s %s (Lot %.2f) | สวน %s @ %s%s | ตาม %s @ %s%s | สุดขั้ว R %+.2f / S %+.2f",
                                    side, StageTag(tier), TierLot(tier),
                                    (dir == -1 ? "SELL STOP" : "BUY STOP"), DoubleToString(pc, _Digits), (okc ? "" : " ❌"),
@@ -1277,6 +1284,7 @@ void LiveSignalStep(long now_msc, int ts, double bid, double ask, bool update_wa
       g_bar_changed = false;
       if(SetActive()) return;
    }
+   if(SetBarUsed(g_set_bar, g_zbar_time)) { WatchReset(g_wsell); WatchReset(g_wbuy); return; }   // 1 ชุด/แท่ง
    if(update_watch) {
       WatchUpdate(g_wsell, -1, g_z_reg, g_z_sma, now_msc, bid, ask, ZFloat(-1, g_bar0_fz));
       WatchUpdate(g_wbuy,   1, g_z_reg, g_z_sma, now_msc, bid, ask, ZFloat( 1, g_bar0_fz));
@@ -1345,6 +1353,24 @@ void S2RestoreDone() {
       if(SysOfComment(HistoryDealGetString(d, DEAL_COMMENT)) == 3 && (datetime)HistoryDealGetInteger(d, DEAL_TIME) >= g_s2.bar) { g_s2.done = true; break; }
    }
 }
+
+// แท่งนี้วางชุด T2-T4 ไปแล้วไหม (เริ่ม EA / ขึ้นแท่งใหม่): ออเดอร์ Stop ของ EA (รอ / ประวัติ) ที่วางตั้งแต่เปิดแท่ง
+void SetBarRestore(datetime bar) {
+   for(int i = OrdersTotal() - 1; i >= 0; i--) {
+      ulong t = OrderGetTicket(i);
+      if(t != 0 && IsOurOrder() && (datetime)OrderGetInteger(ORDER_TIME_SETUP) >= bar) { g_set_bar = bar; return; }
+   }
+   if(!HistorySelect(bar, ServerNow() + 60)) return;
+   for(int i = HistoryOrdersTotal() - 1; i >= 0; i--) {
+      ulong o = HistoryOrderGetTicket(i);
+      if(o == 0 || HistoryOrderGetInteger(o, ORDER_MAGIC) != InpMagic || HistoryOrderGetString(o, ORDER_SYMBOL) != _Symbol) continue;
+      long ty = HistoryOrderGetInteger(o, ORDER_TYPE);
+      if((ty == ORDER_TYPE_BUY_STOP || ty == ORDER_TYPE_SELL_STOP) && (datetime)HistoryOrderGetInteger(o, ORDER_TIME_SETUP) >= bar) { g_set_bar = bar; return; }
+   }
+}
+
+// 1 ชุด/แท่ง: แท่งนี้วางชุด T2-T4 ไปแล้ว → ไม่เฝ้า / วางเพิ่ม
+bool SetBarUsed(datetime set_bar, datetime bar) { return g_en[7] && bar > 0 && set_bar == bar; }
 
 bool IsOurDeal(ulong deal, long entry) {
    return (HistoryDealGetInteger(deal, DEAL_MAGIC) == InpMagic && HistoryDealGetString(deal, DEAL_SYMBOL) == _Symbol &&
@@ -2221,6 +2247,7 @@ WatchState g_rp_wb;
 int        g_t5_leg       = -1;      // index ใน g_rt ของไม้ T5 ที่ถืออยู่ (−1 = ไม่มี)
 int        g_s2_leg       = -1;      // index ใน g_rt ของไม้ S2 ที่ถืออยู่ (−1 = ไม่มี)
 S2State    g_rp_s2;                  // S2 ของแท่งที่กำลังเล่น
+datetime   g_rp_set_bar   = 0;       // แท่งที่วางชุด T2-T4 ล่าสุด (Tick Replay)
 int        g_rp_t5_cur    = 0;       // T5: แท่งที่กำลังเล่นแตะ > T5 แล้ว (ทิศของไม้สวน)
 double     g_rp_t5_cur_z  = 0.0;
 int        g_rp_t5_pend   = 0;       // T5: รอเปิดในแท่งนี้ (จากแท่งก่อน)
@@ -2258,6 +2285,7 @@ void ReplayReset() {
    g_t5_leg = -1; g_s2_leg = -1;
    S2Clear(g_rp_s2);
    g_rp_t5_cur = 0; g_rp_t5_cur_z = 0.0; g_rp_t5_pend = 0; g_rp_t5_pend_z = 0.0; g_rp_t5_until = 0;
+   g_rp_set_bar = 0;
    g_rp_csv_rows = -1;
    g_rp_bid = 0.0; g_rp_ask = 0.0; g_rp_zr = 0.0; g_rp_zs = 0.0;
    g_rp_msc = 0; g_rp_have = false; g_rp_init = false; g_rp_caught = false;
@@ -2481,6 +2509,7 @@ void ReplayFire(int dir, long fire_msc) {
       g_rt[i].max_tier = w.max_tier;
    }
    g_set_on     = true;
+   g_rp_set_bar = g_rp_bar_t;
    g_set_leg[0] = ic;
    g_set_leg[1] = itf;
    WatchReset(g_rp_ws);
@@ -2528,7 +2557,7 @@ void ReplayTimeEvents(long msc) {
    }
    ReplaySetCheck();
    // ชุด T2-T4: ครบเวลาเฝ้า → วางชุด (ชุดเดิมยังไม่จบ = ไม่หาสัญญาณใหม่)
-   if(!g_set_on) {
+   if(!g_set_on && !SetBarUsed(g_rp_set_bar, g_rp_bar_t)) {
       if(WatchReady(g_rp_ws, msc))      ReplayFire(-1, MathMax(WatchDeadline(g_rp_ws), g_rp_msc));
       else if(WatchReady(g_rp_wb, msc)) ReplayFire( 1, MathMax(WatchDeadline(g_rp_wb), g_rp_msc));
    }
@@ -2663,7 +2692,7 @@ void ReplayTick(const MqlTick &tk) {
    }
 
    // D) เฝ้ายอดราคา (ชุด T2-T4): ขึ้นแท่งใหม่ / ชุดนี้ยังไม่จบ = ล้างการเฝ้า — เวลาตลาด / สเปรด ตรวจตอนวาง
-   bool active = g_set_on;
+   bool active = g_set_on || SetBarUsed(g_rp_set_bar, g_rp_bar_t);   // 1 ชุด/แท่ง
    if(!zok || g_rp_bar_chg || active) { WatchReset(g_rp_ws); WatchReset(g_rp_wb); }
    if(zok && !active) {
       WatchUpdate(g_rp_ws, -1, zr, zs, msc, bid, ask, ZFloat(-1, g_rp_fz));
@@ -3251,7 +3280,8 @@ string WatchText(const WatchState &w, bool is_sell, long now_msc) {
    string   sg   = is_sell ? "+" : "−";
    int      dir  = is_sell ? -1 : 1;
    double   zf   = ZFloat(dir, g_bar0_fz);
-   string   hold = SetActive() ? " | ⏸️ ชุด T2-T4 ยังไม่จบ (ชุดนี้ยังไม่หาสัญญาณใหม่)" : "";
+   string   hold = SetActive() ? " | ⏸️ ชุด T2-T4 ยังไม่จบ (ชุดนี้ยังไม่หาสัญญาณใหม่)"
+                 : (SetBarUsed(g_set_bar, g_zbar_time) ? " | ⏸️ แท่งนี้วางชุด T2-T4 ไปแล้ว (1 ชุด/แท่ง)" : "");
    if(w.active) {
       double left = (double)(WatchDeadline(w) - now_msc) / 1000.0;
       if(left < 0.0) left = 0.0;
@@ -3378,7 +3408,7 @@ void UpdateDashboard(int ts, datetime now) {
    string news_str = NextNewsText(now);
 
    long   now_msc = NowMsc();
-   string msg = StringFormat("=== 📊 7-Lines Counter EA v14.90 (%s T2 ลอย>%.2f Z>%.1f %d วิ | %s T3 >%.1f %d วิ | %s T4 >%.1f %d วิ | ยอดใหม่ ≥%.0f | Stop ±%.0f: สวน SL ยอด±%.0f / ตาม SL %.0f | %s T5 แตะ>%.1f → แท่งใหม่ SL %.0f | %s S2 แท่งก่อน>%.1f ไส้ %d วิ SL ยอด (%.0f–%.0f) TP %.1fR | ตัดจบ %d แท่ง | เกราะ %.0f→+%.0f / %.0f→+%.0f / %.0f→+%.0f | วิ่งยาว: ไล่จี้ %.0f เมื่อ ≥%.0f ตัดจบ %d แท่ง) ===\n",
+   string msg = StringFormat("=== 📊 7-Lines Counter EA v14.91 (%s T2 ลอย>%.2f Z>%.1f %d วิ | %s T3 >%.1f %d วิ | %s T4 >%.1f %d วิ | ยอดใหม่ ≥%.0f | Stop ±%.0f: สวน SL ยอด±%.0f / ตาม SL %.0f | %s T5 แตะ>%.1f → แท่งใหม่ SL %.0f | %s S2 แท่งก่อน>%.1f ไส้ %d วิ SL ยอด (%.0f–%.0f) TP %.1fR | ตัดจบ %d แท่ง | เกราะ %.0f→+%.0f / %.0f→+%.0f / %.0f→+%.0f | วิ่งยาว: ไล่จี้ %.0f เมื่อ ≥%.0f ตัดจบ %d แท่ง) ===\n",
                              (g_en[2] ? "✅" : "⛔"), InpFloatMin, InpT2_Z, InpT2_Sec, (g_en[3] ? "✅" : "⛔"), InpT3_Z, InpT3_Sec,
                              (g_en[4] ? "✅" : "⛔"), InpT4_Z, InpT4_Sec, InpNoNewExt_Pts, InpStopDist_Pts, InpSLPeak_Pts, InpTrendSL_Pts,
                              (g_en[5] ? "✅" : "⛔"), InpT5_Z, InpT5_SL_Pts, (g_en[6] ? "✅" : "⛔"), InpS2_PrevZ, InpS2_NoNewSec, InpS2_MinSL_Pts, InpS2_MaxSL_Pts, InpS2_RR,
@@ -3416,8 +3446,8 @@ const string BTN_PREFIX = "7LCEA_BTN_T";
 const string PANEL_PREFIX = "7LCEA_PN_";
 const int    LAYOUT_MAX_SHIFT = 3;   // ป้ายบนแท่งเลื่อนออกจากแท่งได้ไม่เกินกี่แถว (เกิน = ซ่อน)
 
-// ชื่อปุ่ม: 2-5 = T2-T5, 6 = S2
-string BtnTag(int t) { return (t == 6) ? "S2" : StageTag(t); }
+// ชื่อปุ่ม: 2-5 = T2-T5, 6 = S2, 7 = 1 ชุด/แท่ง
+string BtnTag(int t) { return (t == 7) ? "1/แท่ง" : ((t == 6) ? "S2" : StageTag(t)); }
 
 string TierGVName(int tier) { return StringFormat("7LCEA_%s_%I64d_T%d", _Symbol, InpMagic, tier); }
 
@@ -3426,8 +3456,8 @@ void TierEnableInit() {
    int  r       = UninitializeReason();
    bool restore = (r == REASON_CHARTCHANGE || r == REASON_RECOMPILE || r == REASON_ACCOUNT);
    ArrayInitialize(g_en, false);
-   g_en[2] = InpEnableT2; g_en[3] = InpEnableT3; g_en[4] = InpEnableT4; g_en[5] = InpEnableT5; g_en[6] = InpEnableS2;
-   for(int t = 2; t <= 6; t++) {
+   g_en[2] = InpEnableT2; g_en[3] = InpEnableT3; g_en[4] = InpEnableT4; g_en[5] = InpEnableT5; g_en[6] = InpEnableS2; g_en[7] = InpOneSetPerBar;
+   for(int t = 2; t <= 7; t++) {
       if(restore && GlobalVariableCheck(TierGVName(t))) g_en[t] = (GlobalVariableGet(TierGVName(t)) > 0.5);
       GlobalVariableSet(TierGVName(t), g_en[t] ? 1.0 : 0.0);
    }
@@ -3435,7 +3465,7 @@ void TierEnableInit() {
 
 void DrawTierButtons() {
    if(!g_draw) return;
-   for(int t = 2; t <= 6; t++) {
+   for(int t = 2; t <= 7; t++) {
       string nm = BTN_PREFIX + IntegerToString(t);
       if(ObjectFind(0, nm) < 0) {
          ObjectCreate(0, nm, OBJ_BUTTON, 0, 0, 0);
@@ -3459,7 +3489,7 @@ void DrawTierButtons() {
 
 // สลับระดับ → เก็บสถานะ, ล้างการเฝ้า, เล่นซ้ำ Tick Replay ใหม่ตามระดับที่เปิด
 void ToggleTier(int tier) {
-   if(tier < 2 || tier > 6) return;
+   if(tier < 2 || tier > 7) return;
    g_en[tier] = !g_en[tier];
    GlobalVariableSet(TierGVName(tier), g_en[tier] ? 1.0 : 0.0);
    WatchReset(g_wsell);
@@ -3849,6 +3879,7 @@ int OnInit() {
    g_t5_cur_dir = 0; g_t5_cur_z = 0.0; g_t5_pend_dir = 0; g_t5_pend_z = 0.0; g_t5_pend_until = 0; g_t5_next_try = 0;
    S2Clear(g_s2);
    g_s2_next_try   = 0;
+   g_set_bar       = 0;
    g_both_tk       = 0; g_both_sl = 0.0;
    g_bar_changed   = false;
    g_last_tick_msc = 0;
